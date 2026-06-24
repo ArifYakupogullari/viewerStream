@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fake StreamBIM Host</title>
+    <link rel="stylesheet" href="/src/host/host.css" />
+  </head>
+  <body>
+    <div class="main">
+      <div class="panel">
+        <h1>Fake StreamBIM Host</h1>
+        <p class="hint">
+          Simulates a StreamBIM project hosting this widget in an iframe, so the
+          camera-sync logic can be exercised without a live StreamBIM project.
+        </p>
+
+        <section>
+          <h2>Scene</h2>
+          <label>plyUrl
+            <input id="plyUrlInput" type="text" value="/test-scenes/point_cloud.ply" />
+          </label>
+          <button id="loadBtn">Load widget</button>
+        </section>
+
+        <section>
+          <h2>Camera</h2>
+          <div class="row">
+            <label>Pos X <input id="posX" type="number" step="0.1" value="0" /></label>
+            <label>Pos Y <input id="posY" type="number" step="0.1" value="1.6" /></label>
+            <label>Pos Z <input id="posZ" type="number" step="0.1" value="5" /></label>
+          </div>
+
+          <div id="targetUpFields">
+            <div class="row">
+              <label>Target X <input id="tgtX" type="number" step="0.1" value="0" /></label>
+              <label>Target Y <input id="tgtY" type="number" step="0.1" value="0" /></label>
+              <label>Target Z <input id="tgtZ" type="number" step="0.1" value="0" /></label>
+            </div>
+            <div class="row">
+              <label>Up X <input id="upX" type="number" step="0.1" value="0" /></label>
+              <label>Up Y <input id="upY" type="number" step="0.1" value="1" /></label>
+              <label>Up Z <input id="upZ" type="number" step="0.1" value="0" /></label>
+            </div>
+          </div>
+
+          <div id="eulerFields" class="hidden">
+            <div class="row">
+              <label>Yaw° <input id="yaw" type="number" step="1" value="0" /></label>
+              <label>Pitch° <input id="pitch" type="number" step="1" value="0" /></label>
+              <label>Roll° <input id="roll" type="number" step="1" value="0" /></label>
+            </div>
+          </div>
+
+          <div class="row">
+            <label>FOV° <input id="fov" type="number" step="1" value="65" /></label>
+          </div>
+
+          <div class="row">
+            <label><input id="quaternionMode" type="checkbox" /> Quaternion mode (send quaternion instead of target/up)</label>
+          </div>
+
+          <div class="row">
+            <button id="sendBtn">Send cameraChanged</button>
+            <label><input id="orbitToggle" type="checkbox" /> Animate orbit</label>
+          </div>
+        </section>
+
+        <section>
+          <h2>Event log</h2>
+          <div id="events"></div>
+        </section>
+      </div>
+
+      <iframe id="widget-frame" title="StreamBIM widget"></iframe>
+    </div>
+    <script type="module" src="/src/host/host.js"></script>
+  </body>
+</html>

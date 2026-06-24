@@ -1,0 +1,53 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+#app {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+}
+
+#splat-container {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  text-align: center;
+  padding: 24px;
+  box-sizing: border-box;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  z-index: 10;
+}
+
+#overlay.hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+
+#overlay-message {
+  font-size: 16px;
+  line-height: 1.5;
+  max-width: 480px;
+}
+
+#overlay.error #overlay-message {
+  color: #ff8080;
+}
