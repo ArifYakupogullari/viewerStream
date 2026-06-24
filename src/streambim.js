@@ -60,6 +60,34 @@ export function connectStreamBIM({ onCameraState }) {
 }
 
 /**
+ * Fetches a time-limited download URL for a StreamBIM document using the
+ * widget's authenticated API access.
+ *
+ * Endpoint: GET /project-{projectId}/api/v1/documents/{documentId}/downloadlink
+ *
+ * @param {string|number} projectId
+ * @param {string|number} documentId
+ * @returns {Promise<string>} resolves with the download URL (may be a full URL
+ *   or a path relative to the StreamBIM origin; the caller must use it
+ *   immediately as the token is time-limited).
+ */
+export function fetchDocumentDownloadUrl(projectId, documentId) {
+  return StreamBIM.API.makeApiRequest({
+    method: 'GET',
+    path: `/project-${projectId}/api/v1/documents/${documentId}/downloadlink`,
+  }).then((response) => {
+    console.debug('[streambim] downloadlink response', response);
+    if (typeof response === 'string') return response;
+    if (response && typeof response.url === 'string') return response.url;
+    if (response && typeof response.downloadUrl === 'string') return response.downloadUrl;
+    // Some endpoints return the link as the only key in the object
+    const vals = response && Object.values(response);
+    if (vals && vals.length === 1 && typeof vals[0] === 'string') return vals[0];
+    throw new Error('Unexpected downloadlink response: ' + JSON.stringify(response));
+  });
+}
+
+/**
  * Applies a StreamBIM CameraState to a Three.js camera. The exact shape of
  * CameraState is not fully documented, so this is written defensively to
  * handle either a quaternion-based or a target/up-based orientation.
