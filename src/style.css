@@ -51,3 +51,44 @@ html, body {
 #overlay.error #overlay-message {
   color: #ff8080;
 }
+
+#model-picker {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  backdrop-filter: blur(4px);
+}
+
+#model-picker.hidden {
+  display: none;
+}
+
+#model-picker label {
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
+#model-select {
+  background: transparent;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 13px;
+  cursor: pointer;
+  max-width: 220px;
+}
+
+#model-select option {
+  background: #222;
+  color: #fff;
+}

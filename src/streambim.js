@@ -71,6 +71,30 @@ export function connectStreamBIM({ onCameraState }) {
  *   or a path relative to the StreamBIM origin; the caller must use it
  *   immediately as the token is time-limited).
  */
+/**
+ * Fetches all documents in a project and returns only the .ply files.
+ *
+ * Endpoint: GET /project-{projectId}/api/v1/documents
+ *
+ * @param {string|number} projectId
+ * @returns {Promise<Array<{id: number, name: string}>>}
+ */
+export function fetchPlyDocuments(projectId) {
+  return StreamBIM.API.makeApiRequest({
+    method: 'GET',
+    path: `/project-${projectId}/api/v1/documents`,
+  }).then((response) => {
+    console.debug('[streambim] documents response', response);
+    const docs = Array.isArray(response)
+      ? response
+      : (response && (response.documents || response.data || response.items)) || [];
+    return docs.filter((doc) => {
+      const name = doc.filename || doc.name || doc.title || '';
+      return name.toLowerCase().endsWith('.ply');
+    });
+  });
+}
+
 export function fetchDocumentDownloadUrl(projectId, documentId) {
   return StreamBIM.API.makeApiRequest({
     method: 'GET',
