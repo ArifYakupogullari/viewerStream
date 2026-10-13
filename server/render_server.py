@@ -179,20 +179,24 @@ class GsplatBackend:
         pos = center + np.array([0.0, 0.0, extent])
         return {"position": pos.tolist(), "target": center.tolist(), "up": [0, 1, 0], "fovY": 60.0}
 
-    def render(self, viewmat_cv, fx, fy, cx, cy, width, height):
+    def render_tensor(self, viewmat_cv, fx, fy, cx, cy, width, height, **raster_opts):
+        """HxWx3 uint8 image, still on the GPU. raster_opts override gsplat's
+        rasterization() defaults (bench_render.py uses this to compare)."""
         torch = self.torch
         with torch.no_grad():
             dev = self.means.device
             viewmats = torch.tensor(viewmat_cv, dtype=torch.float32, device=dev)[None]
             ks = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=torch.float32, device=dev)[None]
+            opts = dict(sh_degree=self.sh_degree, near_plane=0.01, far_plane=1e6, backgrounds=self.background)
+            opts.update(raster_opts)
             colors, _alphas, _meta = self.rasterization(
                 self.means, self.quats, self.scales, self.opacities, self.sh,
-                viewmats, ks, width, height,
-                sh_degree=self.sh_degree, near_plane=0.01, far_plane=1e6,
-                backgrounds=self.background,
+                viewmats, ks, width, height, **opts,
             )
-            img = (colors[0, ..., :3].clamp(0, 1) * 255).to(torch.uint8)
-            return img.cpu().numpy()
+            return (colors[0, ..., :3].clamp(0, 1) * 255).to(torch.uint8)
+
+    def render(self, viewmat_cv, fx, fy, cx, cy, width, height):
+        return self.render_tensor(viewmat_cv, fx, fy, cx, cy, width, height).cpu().numpy()
 
 
 class FakeBackend:
