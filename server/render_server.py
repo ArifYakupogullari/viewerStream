@@ -117,6 +117,36 @@ def look_at_view(eye, target, up):
     return m
 
 
+# Load-time cleanup presets. "extent" = 95th-percentile distance from the
+# scene centre, so thresholds follow the scene's (arbitrary COLMAP) units.
+CLEAN_PRESETS = {
+    "light": dict(min_opacity=0.02, max_needle=50, max_size=0.20, max_dist=3.0),
+    "medium": dict(min_opacity=0.05, max_needle=20, max_size=0.10, max_dist=2.5),
+    "strong": dict(min_opacity=0.10, max_needle=10, max_size=0.05, max_dist=2.0),
+}
+
+
+def cleaning_masks(v, preset):
+    """Per-rule 'remove' masks for a graphdeco vertex table:
+    transparent  barely visible (low opacity) - floaters, fog
+    needle       long along one axis only (longest / middle axis), the spiky
+                 'iron needle' artefacts; flat surface discs are kept
+    oversized    huge blobs relative to the scene
+    outlier      far outside the scene"""
+    p = CLEAN_PRESETS[preset]
+    opacity = 1.0 / (1.0 + np.exp(-np.asarray(v["opacity"], np.float32)))
+    scales = np.sort(np.exp(np.stack([np.asarray(v[f"scale_{i}"], np.float32) for i in range(3)], 1)), axis=1)
+    xyz = np.stack([np.asarray(v[k], np.float32) for k in "xyz"], 1)
+    dist = np.linalg.norm(xyz - np.median(xyz, axis=0), axis=1)
+    extent = float(np.percentile(dist, 95))
+    return {
+        "transparent": opacity < p["min_opacity"],
+        "needle": scales[:, 2] / np.maximum(scales[:, 1], 1e-12) > p["max_needle"],
+        "oversized": scales[:, 2] > p["max_size"] * extent,
+        "outlier": dist > p["max_dist"] * extent,
+    }
+
+
 def default_camera_from_cameras_json(ply_path):
     """First training camera from graphdeco's cameras.json (model_dir/cameras.json,
     two levels above point_cloud/iteration_N/point_cloud.ply), in Three.js terms."""
@@ -143,13 +173,19 @@ def default_camera_from_cameras_json(ply_path):
 class GsplatBackend:
     name = "gsplat"
 
-    def __init__(self, ply_path, background):
+    def __init__(self, ply_path, background, clean=None):
         import torch
         from gsplat import rasterization
 
         self.torch, self.rasterization = torch, rasterization
         t0 = time.time()
         v = read_ply_vertices(ply_path)
+        if clean:
+            masks = cleaning_masks(v, clean)
+            drop = np.logical_or.reduce(list(masks.values()))
+            print(f"[render] clean={clean}: dropping {drop.sum():,} of {len(v):,} gaussians ("
+                  + ", ".join(f"{k} {m.sum():,}" for k, m in masks.items()) + ")", flush=True)
+            v = v[~drop]
         names = v.dtype.names
         n = len(v)
 
@@ -591,6 +627,8 @@ def main():
     ap.add_argument("--max-side", type=int, default=1920)
     ap.add_argument("--quality", type=int, default=80)
     ap.add_argument("--background", default="0,0,0", help="r,g,b in 0..1")
+    ap.add_argument("--clean", choices=sorted(CLEAN_PRESETS),
+                    help="drop floaters / needles / outliers at load (see CLEAN_PRESETS)")
     ap.add_argument("--bim-demo", action="store_true",
                     help="proof of concept: depth-merge a few BIM-like boxes into the stream (M cycles modes)")
     args = ap.parse_args()
@@ -612,7 +650,7 @@ def main():
     else:
         if not args.ply:
             sys.exit("--ply is required for the gsplat backend")
-        backend = GsplatBackend(args.ply, background)
+        backend = GsplatBackend(args.ply, background, clean=args.clean)
 
     service = RenderService(backend, args)
     service.warm_up()

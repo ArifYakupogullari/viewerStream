@@ -183,10 +183,11 @@ def main():
     ap.add_argument("--backend", choices=["gsplat", "fake"], default="gsplat")
     ap.add_argument("--idle-timeout", type=int, default=1800)
     ap.add_argument("--bim-demo", action="store_true", help="merged BIM + splat proof of concept")
+    ap.add_argument("--clean", choices=["light", "medium", "strong"], help="drop floaters/needles at load")
     ap.add_argument("--foreground", action="store_true", help="block until the renderer exits")
     a = ap.parse_args()
     session = start(ply=a.ply, backend=a.backend, idle_timeout=a.idle_timeout,
-                    extra_args=("--bim-demo",) if a.bim_demo else ())
+                    extra_args=(("--bim-demo",) if a.bim_demo else ()) + (("--clean", a.clean) if a.clean else ()))
     # The link carries the session secret: keep it out of the (possibly
     # group-readable) Slurm .out file and in a user-only file instead.
     link_file = LOG_DIR / f"session-{session.host}-{session.port}.txt"
