@@ -31,8 +31,10 @@ python3 -c "import numpy, torch; print(f'numpy=={numpy.__version__}'); print('to
 export PIP_CONSTRAINT="$VENV/constraints.txt"
 echo "pinned: $(tr '\n' ' ' < "$VENV/constraints.txt")"
 
-# gsplat compiles its CUDA kernels on first use; build them for both
-# A100 (8.0) and H100 (9.0) nodes.
+# gsplat compiles its CUDA kernels on first use (via ninja, which pip puts in
+# the venv's bin/ - so that has to be on PATH); build them for both A100 (8.0)
+# and H100 (9.0) nodes. launch.py sets the same two variables at runtime.
+export PATH="$VENV/bin:$PATH"
 export TORCH_CUDA_ARCH_LIST="8.0;9.0"
 "$VENV/bin/pip" install --upgrade pip
 "$VENV/bin/pip" install "gsplat==1.4.0" aiohttp simplejpeg segno

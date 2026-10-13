@@ -152,8 +152,11 @@ def start(ply=None, backend="gsplat", sif=DEFAULT_SIF, venv=DEFAULT_VENV, idle_t
            "--prefix", f"/node/{host}/{port}/", *extra_args]
     if ply:
         cmd += ["--ply", str(ply)]
-    # the secret goes through the environment, not argv (argv is visible in ps)
-    env = dict(os.environ, APPTAINERENV_VIEWERSTREAM_SECRET=secret)
+    # the secret goes through the environment, not argv (argv is visible in ps);
+    # gsplat's JIT build/load needs the venv's ninja on PATH, and the same arch
+    # list setup_env.sh compiled with so the cached kernels are reused
+    env = dict(os.environ, APPTAINERENV_VIEWERSTREAM_SECRET=secret,
+               APPTAINERENV_PREPEND_PATH=f"{venv}/bin", APPTAINERENV_TORCH_CUDA_ARCH_LIST="8.0;9.0")
     with open(log_path, "w") as log:
         proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True)
     session = Session(proc, host, port, secret, log_path)
