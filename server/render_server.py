@@ -221,11 +221,10 @@ class GsplatBackend:
             dev = self.means.device
             viewmats = torch.tensor(viewmat_cv, dtype=torch.float32, device=dev)[None]
             ks = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=torch.float32, device=dev)[None]
-            background = torch.cat([self.background, torch.zeros(1, 1, device=dev)], dim=-1)
             out, alphas, _meta = self.rasterization(
                 self.means, self.quats, self.scales, self.opacities, self.sh,
                 viewmats, ks, width, height, sh_degree=self.sh_degree, near_plane=0.01, far_plane=1e6,
-                backgrounds=background, render_mode="RGB+ED",
+                backgrounds=self.background, render_mode="RGB+ED",  # gsplat pads the depth channel
             )
             rgb = out[0, ..., :3].clamp(0, 1)
             depth = torch.where(alphas[0, ..., 0] > 0.5, out[0, ..., 3], torch.full_like(out[0, ..., 3], float("inf")))
