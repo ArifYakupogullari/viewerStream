@@ -10,23 +10,7 @@ import argparse
 import math
 import time
 
-import numpy as np
-
-from render_server import GL_TO_CV, GsplatBackend, encode_jpeg
-
-
-def look_at_view(eye, target, up):
-    """Three.js-convention world->camera matrix (camera looks down -Z)."""
-    eye, target, up = (np.asarray(v, float) for v in (eye, target, up))
-    z = eye - target
-    z /= np.linalg.norm(z)
-    x = np.cross(up, z)
-    x /= np.linalg.norm(x)
-    y = np.cross(z, x)
-    m = np.eye(4)
-    m[0, :3], m[1, :3], m[2, :3] = x, y, z
-    m[:3, 3] = [-x @ eye, -y @ eye, -z @ eye]
-    return m
+from render_server import GL_TO_CV, GsplatBackend, encode_jpeg, look_at_view
 
 
 def main():

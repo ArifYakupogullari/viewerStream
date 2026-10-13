@@ -99,22 +99,22 @@ canvas.addEventListener('pointermove', (e) => {
   p.x = e.clientX;
   p.y = e.clientY;
   if (pointers.size === 1) {
-    if (p.button === 2 || e.shiftKey) move(0, -dx * step * 0.05, dy * step * 0.05);
+    if (p.button === 2 || e.shiftKey) move(0, -dx * step * 0.01, dy * step * 0.01);
     else look(dx, dy);
   } else if (pointers.size === 2) {
     const [a, b] = [...pointers.values()];
     const dist = Math.hypot(a.x - b.x, a.y - b.y);
-    if (pinchDist != null) move((dist - pinchDist) * step * 0.05, 0, 0);
+    if (pinchDist != null) move((dist - pinchDist) * step * 0.01, 0, 0);
     pinchDist = dist;
     // two-finger drag pans by half of each finger's motion
-    move(0, -dx * step * 0.025, dy * step * 0.025);
+    move(0, -dx * step * 0.005, dy * step * 0.005);
   }
 });
 canvas.addEventListener(
   'wheel',
   (e) => {
     e.preventDefault();
-    move(-e.deltaY * step * 0.01, 0, 0);
+    move(-e.deltaY * step * 0.002, 0, 0);
   },
   { passive: false },
 );
@@ -131,7 +131,7 @@ let lastT = performance.now();
 function keyLoop(t) {
   const dt = Math.min(100, t - lastT) / 16.7;
   lastT = t;
-  const k = (step * 0.15 * dt) * (keys.has('shift') ? 4 : 1);
+  const k = (step * 0.04 * dt) * (keys.has('shift') ? 4 : 1);
   const f = (keys.has('w') || keys.has('arrowup') ? 1 : 0) - (keys.has('s') || keys.has('arrowdown') ? 1 : 0);
   const s = (keys.has('d') || keys.has('arrowright') ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') ? 1 : 0);
   const l = (keys.has('e') ? 1 : 0) - (keys.has('q') ? 1 : 0);
@@ -188,7 +188,9 @@ function connect() {
       home = msg.defaultCamera;
       maxSide = msg.maxSide || maxSide;
       const [lo, hi] = msg.bounds;
-      step = Math.max(0.02, Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) * 0.01);
+      // walking-scale steps: 1% of the scene, but never more than 0.5 units
+      // (whole-floor sites are tens of metres across; indoors that overshot walls)
+      step = Math.min(0.5, Math.max(0.02, Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) * 0.01));
       resetCamera();
       const count = msg.numGaussians ? `${(msg.numGaussians / 1e6).toFixed(1)}M gaussians` : 'test pattern';
       setStatus(`${msg.backend} · ${count}`);

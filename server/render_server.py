@@ -40,6 +40,7 @@ import signal
 import struct
 import sys
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
@@ -100,6 +101,20 @@ def read_ply_vertices(path):
         raise ValueError("PLY has no vertex element")
     # the vertex block is the first element, starting right after end_header
     return np.fromfile(path, dtype=np.dtype(props), count=count, offset=header_end)
+
+
+def look_at_view(eye, target, up):
+    """Three.js-convention world->camera matrix (camera looks down -Z), row-major."""
+    eye, target, up = (np.asarray(v, float) for v in (eye, target, up))
+    z = eye - target
+    z /= np.linalg.norm(z)
+    x = np.cross(up, z)
+    x /= np.linalg.norm(x)
+    y = np.cross(z, x)
+    m = np.eye(4)
+    m[0, :3], m[1, :3], m[2, :3] = x, y, z
+    m[:3, 3] = [-x @ eye, -y @ eye, -z @ eye]
+    return m
 
 
 def default_camera_from_cameras_json(ply_path):
@@ -269,6 +284,19 @@ class RenderService:
         self.fps = 0.0
         self.render_ms = 0.0
         self._fps_window = []
+        self._render_times = deque(maxlen=30)
+
+    def warm_up(self):
+        """The first gsplat call loads the CUDA kernels (~1 s). Pay that before
+        anyone connects, then reset the stats so they reflect real frames."""
+        cam = self.backend.default_camera
+        view = look_at_view(cam["position"], cam["target"], cam["up"]).T.flatten().tolist()
+        t0 = time.perf_counter()
+        for _ in range(2):
+            self.render_jpeg(self.parse_camera({"view": view, "fovY": cam["fovY"], "width": 640, "height": 360}))
+        print(f"[render] warm-up done in {time.perf_counter() - t0:.1f}s", flush=True)
+        self.frames, self.fps, self.render_ms = 0, 0.0, 0.0
+        self._fps_window, self._render_times = [], deque(maxlen=30)
 
     def info(self):
         return {"type": "info", "backend": self.backend.name, "numGaussians": self.backend.num_gaussians,
@@ -298,7 +326,8 @@ class RenderService:
         dt = time.perf_counter() - t0
         now = time.time()
         self.frames += 1
-        self.render_ms = 0.9 * self.render_ms + 0.1 * dt * 1000 if self.frames > 1 else dt * 1000
+        self._render_times.append(dt * 1000)
+        self.render_ms = sum(self._render_times) / len(self._render_times)
         self._fps_window = [t for t in self._fps_window if now - t < 2.0] + [now]
         self.fps = len(self._fps_window) / 2.0
         return jpeg
@@ -433,6 +462,7 @@ def main():
         backend = GsplatBackend(args.ply, background)
 
     service = RenderService(backend, args)
+    service.warm_up()
     app = web.Application()
     app.router.add_get(prefix, service.page)
     app.router.add_get(prefix + "{page:relay}", service.page)
