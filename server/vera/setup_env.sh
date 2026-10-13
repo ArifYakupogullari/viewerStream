@@ -36,6 +36,11 @@ echo "pinned: $(tr '\n' ' ' < "$VENV/constraints.txt")"
 # and H100 (9.0) nodes. launch.py sets the same two variables at runtime.
 export PATH="$VENV/bin:$PATH"
 export TORCH_CUDA_ARCH_LIST="8.0;9.0"
+# nvcc's temporaries filled the node's small /tmp ("No space left on device");
+# build in the RAM disk instead, with bounded parallelism
+export TMPDIR="/dev/shm/$USER/viewerstream-build"
+mkdir -p "$TMPDIR"
+export MAX_JOBS=8
 "$VENV/bin/pip" install --upgrade pip
 "$VENV/bin/pip" install "gsplat==1.4.0" aiohttp simplejpeg segno
 
@@ -55,6 +60,7 @@ K = torch.tensor([[[100.0, 0, 64], [0, 100.0, 64], [0, 0, 1]]], device=dev)
 img, _, _ = rasterization(means, quats, scales, opac, sh, torch.eye(4, device=dev)[None], K, 128, 128, sh_degree=0)
 print("gsplat OK:", tuple(img.shape), "on", torch.cuda.get_device_name(0))
 PY
+rm -rf "$TMPDIR"
 IN_CONTAINER
 
 echo "done: venv at $VENV"
