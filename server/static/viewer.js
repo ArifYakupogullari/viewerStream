@@ -1,6 +1,6 @@
 // Standalone remote viewer: first-person navigation (mouse, touch, keys) in
 // the browser, rendering on the server. Opened from the session link the
-// Vera launcher prints, e.g. https://vera.c3se.chalmers.se/rnode/<host>/<port>/?s=<secret>
+// Vera launcher prints, e.g. https://vera.c3se.chalmers.se/node/<host>/<port>/?s=<secret>
 import { createFrameLoop, createStats, requestSize } from './protocol.js';
 
 const canvas = document.getElementById('view');

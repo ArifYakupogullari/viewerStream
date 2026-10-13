@@ -5,7 +5,7 @@ const HELLO_INTERVAL_MS = 500;
 
 /**
  * Parses a session link printed by the Vera launcher, e.g.
- *   https://vera.c3se.chalmers.se/rnode/<host>/<port>/?s=<secret>
+ *   https://vera.c3se.chalmers.se/node/<host>/<port>/?s=<secret>
  * into the relay popup URL and the origin frames will come from.
  * Throws with a readable message on anything else.
  */

@@ -7,7 +7,7 @@ streams the result back as JPEG over a WebSocket.
 
 Access model on Vera (see README "Remote rendering on Vera"):
   * The server is reached through Open OnDemand's authenticated proxy,
-    https://vera.c3se.chalmers.se/rnode/<host>/<port>/, so every viewer has
+    https://vera.c3se.chalmers.se/node/<host>/<port>/, so every viewer has
     logged in with Chalmers credentials.
   * It must NOT listen on 8888-8988: C3SE's unauthenticated public proxy
     (proxy.c3se.chalmers.se) forwards exactly that range.
@@ -16,7 +16,8 @@ Access model on Vera (see README "Remote rendering on Vera"):
     launcher prints, passed here via VIEWERSTREAM_SECRET) and come from an
     allowed Origin.
 
-Endpoints (relative to --prefix, because rnode strips /rnode/<host>/<port>):
+Endpoints (relative to --prefix; Vera's portal proxies /node/<host>/<port>/...
+with the full path, so launch.py passes --prefix /node/<host>/<port>/):
   GET  /         standalone viewer (mouse + touch navigation)
   GET  /relay    popup that bridges a StreamBIM-embedded widget to /ws
   GET  /health   liveness + stats for the launcher (no secrets)
@@ -392,7 +393,7 @@ def main():
     ap.add_argument("--backend", choices=["gsplat", "fake"], default="gsplat")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--prefix", default="/", help="URL prefix the proxy passes through ('/' for OnDemand rnode)")
+    ap.add_argument("--prefix", default="/", help="URL prefix the proxy passes through (/node/<host>/<port>/ on Vera, '/' locally)")
     ap.add_argument("--secret", default=os.environ.get("VIEWERSTREAM_SECRET"),
                     help="session secret (prefer the VIEWERSTREAM_SECRET env var: argv is visible in ps)")
     ap.add_argument("--allowed-origin", action="append", default=None,

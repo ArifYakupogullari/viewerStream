@@ -58,7 +58,7 @@ StreamBIM ──camera──▶ widget (iframe) ──postMessage──▶ relay
 ### Access and security
 
 - The renderer is reached only through the Vera portal's authenticated proxy,
-  `https://vera.c3se.chalmers.se/rnode/<host>/<port>/`, so every viewer logs
+  `https://vera.c3se.chalmers.se/node/<host>/<port>/`, so every viewer logs
   in with a Chalmers account. It deliberately listens **outside 8888-8988**:
   that range is forwarded by C3SE's *unauthenticated* public proxy
   (`proxy.c3se.chalmers.se`), and `render_server.py` refuses those ports.
@@ -178,7 +178,7 @@ production deployment.
   between StreamBIM's viewport and this widget's iframe) can't be ruled out
   without testing against a real instance.
 - **Remote rendering through the Vera portal is untested on the real
-  portal so far.** To verify there: that `rnode/<host>/<port>/` reaches the
+  portal so far.** To verify there: that `node/<host>/<port>/` reaches the
   node and upgrades WebSockets; that the popup keeps `window.opener` (a
   `Cross-Origin-Opener-Policy` header from the portal would sever it); and
   whether the `?s=` secret survives a fresh login redirect (if not, open the

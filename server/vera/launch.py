@@ -17,7 +17,7 @@ Notebook (inside a Vera OnDemand Jupyter session with an A100):
 Batch job: see render_server.sh (calls `python3 launch.py --foreground ...`).
 
 Access: the printed link goes through the Vera portal,
-https://vera.c3se.chalmers.se/rnode/<host>/<port>/?s=<secret>, so opening it
+https://vera.c3se.chalmers.se/node/<host>/<port>/?s=<secret>, so opening it
 requires a Chalmers login; the ?s= secret additionally keeps other cluster
 users (who can reach <host>:<port> directly) out. Ports are chosen outside
 8888-8988, the range C3SE's unauthenticated public proxy forwards.
@@ -60,14 +60,17 @@ def pick_port():
 class Session:
     def __init__(self, proc, host, port, secret, log_path):
         self.proc, self.host, self.port, self.secret, self.log_path = proc, host, port, secret, log_path
+        # Vera's portal proxies /node/<host>/<port>/... with the full path,
+        # so the server's routes live under that prefix
+        self.prefix = f"/node/{host}/{port}/"
 
     @property
     def link(self):
         """Standalone viewer link, also the session link to paste into the widget."""
-        return f"{PORTAL}/rnode/{self.host}/{self.port}/?s={self.secret}"
+        return f"{PORTAL}{self.prefix}?s={self.secret}"
 
     def health(self):
-        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=3) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{self.prefix}health", timeout=3) as r:
             return json.loads(r.read())
 
     def status(self):
@@ -145,7 +148,8 @@ def start(ply=None, backend="gsplat", sif=DEFAULT_SIF, venv=DEFAULT_VENV, idle_t
     log_path = LOG_DIR / f"{host}-{port}.log"
     cmd = [APPTAINER, "exec", "--nv", "--bind", "/cephyr", sif,
            f"{venv}/bin/python", str(REPO / "server" / "render_server.py"),
-           "--backend", backend, "--port", str(port), "--idle-timeout", str(idle_timeout), *extra_args]
+           "--backend", backend, "--port", str(port), "--idle-timeout", str(idle_timeout),
+           "--prefix", f"/node/{host}/{port}/", *extra_args]
     if ply:
         cmd += ["--ply", str(ply)]
     # the secret goes through the environment, not argv (argv is visible in ps)
