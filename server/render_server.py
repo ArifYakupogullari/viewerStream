@@ -216,9 +216,10 @@ class GsplatBackend:
     def render(self, viewmat_cv, fx, fy, cx, cy, width, height):
         return self.render_tensor(viewmat_cv, fx, fy, cx, cy, width, height).cpu().numpy()
 
-    def render_rgbd(self, viewmat_cv, fx, fy, cx, cy, width, height):
-        """Colour (0..1) and camera z-depth as numpy arrays; depth is inf where
-        the splat is mostly transparent (nothing there to occlude BIM)."""
+    def render_rgbd(self, viewmat_cv, fx, fy, cx, cy, width, height, as_numpy=True):
+        """Colour (0..1) and camera z-depth (numpy, or GPU tensors with
+        as_numpy=False); depth is inf where the splat is mostly transparent
+        (nothing there to occlude BIM)."""
         torch = self.torch
         with torch.no_grad():
             dev = self.means.device
@@ -236,7 +237,7 @@ class GsplatBackend:
             )
             rgb = colors[0, ..., :3].clamp(0, 1)
             depth = torch.where(alphas[0, ..., 0] > 0.5, out[0, ..., 3], torch.full_like(out[0, ..., 3], float("inf")))
-            return rgb.cpu().numpy(), depth.cpu().numpy()
+            return (rgb.cpu().numpy(), depth.cpu().numpy()) if as_numpy else (rgb, depth)
 
 
 class FakeBackend:
@@ -346,6 +347,35 @@ class BimDemo:
             color = np.where(hit[..., None], np.asarray(col, np.float32) * shade[..., None], color)
         return color, depth
 
+    def render_torch(self, torch, dev, viewmat_cv, fx, fy, cx, cy, width, height):
+        """Same ray cast as render(), as tensors on `dev` (the GPU path)."""
+        f32 = dict(dtype=torch.float32, device=dev)
+        rot = torch.tensor(viewmat_cv[:3, :3], **f32)
+        o = -rot.T @ torch.tensor(viewmat_cv[:3, 3], **f32)
+        jj, ii = torch.meshgrid(torch.arange(height, **f32), torch.arange(width, **f32), indexing="ij")
+        d = torch.stack([(ii + 0.5 - cx) / fx, (jj + 0.5 - cy) / fy, torch.ones_like(ii)], dim=-1) @ rot
+        dn = d / d.norm(dim=-1, keepdim=True)
+        depth = torch.full((height, width), float("inf"), **f32)
+        color = torch.zeros((height, width, 3), **f32)
+        edge_eps = 0.012 * self.d
+        for centre, axes, half, col in self.boxes:
+            centre, axes, half, col = (torch.tensor(np.asarray(v), **f32) for v in (centre, axes, half, col))
+            ol = (o - centre) @ axes.T
+            dl = d @ axes.T
+            t1 = (-half - ol) / dl
+            t2 = (half - ol) / dl
+            tmin, tmax = torch.minimum(t1, t2), torch.maximum(t1, t2)
+            tnear, tfar = tmin.max(dim=-1).values, tmax.min(dim=-1).values
+            hit = (tnear <= tfar) & (tnear > 0) & (tnear < depth)
+            normal = axes[tmin.argmax(dim=-1)]
+            shade = 0.35 + 0.65 * (normal * dn).sum(-1).abs()
+            p = ol + torch.nan_to_num(tnear)[..., None] * dl
+            edge = ((p.abs() - half).abs() < edge_eps).sum(-1) >= 2
+            shade = torch.where(edge, torch.full_like(shade, 0.15), shade)
+            depth = torch.where(hit, tnear, depth)
+            color = torch.where(hit[..., None], col * shade[..., None], color)
+        return color, depth
+
 
 # ---------------------------------------------------------------------------
 # JPEG
@@ -423,7 +453,17 @@ class RenderService:
     def render_jpeg(self, cam):
         viewmat, fx, fy, cx, cy, w, h, quality, mode = cam
         t0 = time.perf_counter()
-        if self.bim is not None and mode != "splat":
+        if self.bim is not None and mode != "splat" and self.backend.name == "gsplat":
+            torch = self.backend.torch
+            rgb, depth = self.backend.render_rgbd(viewmat, fx, fy, cx, cy, w, h, as_numpy=False)
+            bim_rgb, bim_depth = self.bim.render_torch(torch, rgb.device, viewmat, fx, fy, cx, cy, w, h)
+            front = bim_depth < depth  # BIM surface nearer than the scan: it wins
+            alpha = front.float() * 0.92
+            if mode == "xray":  # also ghost the BIM parts the scan hides
+                alpha = torch.where(torch.isfinite(bim_depth) & ~front, torch.full_like(alpha, 0.35), alpha)
+            out = rgb * (1 - alpha[..., None]) + bim_rgb * alpha[..., None]
+            img = (out.clamp(0, 1) * 255).to(torch.uint8).cpu().numpy()
+        elif self.bim is not None and mode != "splat":
             rgb, depth = self.backend.render_rgbd(viewmat, fx, fy, cx, cy, w, h)
             bim_rgb, bim_depth = self.bim.render(viewmat, fx, fy, cx, cy, w, h)
             front = bim_depth < depth  # BIM surface nearer than the scan: it wins
