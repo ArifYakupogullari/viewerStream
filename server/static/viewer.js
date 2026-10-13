@@ -51,6 +51,9 @@ let fwd = [0, 0, -1];
 let up = [0, 1, 0];
 let fovY = 60;
 let step = 0.1; // world units per "nudge", derived from scene size
+let modes = ['splat'];
+let mode = 'splat';
+let statusBase = '';
 
 function resetCamera() {
   if (!home) return;
@@ -122,6 +125,10 @@ canvas.addEventListener(
 const keys = new Set();
 window.addEventListener('keydown', (e) => {
   if (e.key === 'r' || e.key === 'R') resetCamera();
+  if ((e.key === 'm' || e.key === 'M') && modes.length > 1) {
+    mode = modes[(modes.indexOf(mode) + 1) % modes.length];
+    setStatus(`${statusBase} · ${mode}`);
+  }
   keys.add(e.key.toLowerCase());
 });
 window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
@@ -153,7 +160,7 @@ function getView() {
     canvas.height = h;
   }
   if (!w || !h) return null;
-  return { view: lookAtView(eye, add(eye, fwd), up), fovY, ...requestSize(w, h, maxSide) };
+  return { view: lookAtView(eye, add(eye, fwd), up), fovY, mode, ...requestSize(w, h, maxSide) };
 }
 
 let ws = null;
@@ -193,7 +200,10 @@ function connect() {
       step = Math.min(0.5, Math.max(0.02, Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) * 0.01));
       resetCamera();
       const count = msg.numGaussians ? `${(msg.numGaussians / 1e6).toFixed(1)}M gaussians` : 'test pattern';
-      setStatus(`${msg.backend} · ${count}`);
+      modes = msg.modes || ['splat'];
+      mode = modes[0];
+      statusBase = `${msg.backend} · ${count}`;
+      setStatus(modes.length > 1 ? `${statusBase} · ${mode} (M: switch view)` : statusBase);
       loop.refresh();
       loop.start();
     } else if (msg.type === 'error') {

@@ -213,6 +213,24 @@ class GsplatBackend:
     def render(self, viewmat_cv, fx, fy, cx, cy, width, height):
         return self.render_tensor(viewmat_cv, fx, fy, cx, cy, width, height).cpu().numpy()
 
+    def render_rgbd(self, viewmat_cv, fx, fy, cx, cy, width, height):
+        """Colour (0..1) and camera z-depth as numpy arrays; depth is inf where
+        the splat is mostly transparent (nothing there to occlude BIM)."""
+        torch = self.torch
+        with torch.no_grad():
+            dev = self.means.device
+            viewmats = torch.tensor(viewmat_cv, dtype=torch.float32, device=dev)[None]
+            ks = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=torch.float32, device=dev)[None]
+            background = torch.cat([self.background, torch.zeros(1, 1, device=dev)], dim=-1)
+            out, alphas, _meta = self.rasterization(
+                self.means, self.quats, self.scales, self.opacities, self.sh,
+                viewmats, ks, width, height, sh_degree=self.sh_degree, near_plane=0.01, far_plane=1e6,
+                backgrounds=background, render_mode="RGB+ED",
+            )
+            rgb = out[0, ..., :3].clamp(0, 1)
+            depth = torch.where(alphas[0, ..., 0] > 0.5, out[0, ..., 3], torch.full_like(out[0, ..., 3], float("inf")))
+            return rgb.cpu().numpy(), depth.cpu().numpy()
+
 
 class FakeBackend:
     """GPU-free stand-in: a checkered ground plane (y = 0) under a sky gradient,
@@ -228,12 +246,17 @@ class FakeBackend:
         self.background = np.asarray(background, np.float32)
 
     def render(self, viewmat_cv, fx, fy, cx, cy, width, height):
+        rgb, _depth = self.render_rgbd(viewmat_cv, fx, fy, cx, cy, width, height)
+        return (rgb * 255).astype(np.uint8)
+
+    def render_rgbd(self, viewmat_cv, fx, fy, cx, cy, width, height):
         r, t = viewmat_cv[:3, :3], viewmat_cv[:3, 3]
         origin = -r.T @ t
         jj, ii = np.mgrid[0:height, 0:width].astype(np.float32)
         d_cam = np.stack([(ii + 0.5 - cx) / fx, (jj + 0.5 - cy) / fy, np.ones_like(ii)], axis=-1)
         d = d_cam @ r.astype(np.float32)  # world = R^T cam, as row vectors
-        d /= np.linalg.norm(d, axis=-1, keepdims=True)
+        ray_len = np.linalg.norm(d, axis=-1)
+        d /= ray_len[..., None]
         sky = np.clip(d[..., 1:2], 0, 1)
         img = (1 - sky) * np.array([0.75, 0.82, 0.92], np.float32) + sky * np.array([0.25, 0.45, 0.8], np.float32)
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -248,7 +271,72 @@ class FakeBackend:
         fade = np.exp(-np.nan_to_num(hit_t, posinf=1e3) / 60.0)[..., None]
         ground = ground * fade + img * (1 - fade)
         img = np.where(hit[..., None], ground, img)
-        return (np.clip(img, 0, 1) * 255).astype(np.uint8)
+        depth = np.where(hit, hit_t / ray_len, np.inf).astype(np.float32)  # distance -> camera z
+        return np.clip(img, 0, 1), depth
+
+
+class BimDemo:
+    """Proof of concept for the merged BIM + splat view. A few BIM-like boxes
+    (a column, a wall segment, a duct) are placed relative to the scene's
+    default camera, using the splat's own depth so one stands clear of the
+    surface ahead and another sinks into it. They are ray-cast exactly and
+    depth-merged with the splat on the server, so the stream carries one
+    combined image (no lag between layers). Real IFC geometry + a splat->BIM
+    alignment would replace the boxes."""
+
+    MODES = ("merged", "xray", "splat")
+
+    def __init__(self, backend):
+        cam = backend.default_camera
+        eye = np.asarray(cam["position"], float)
+        f = np.asarray(cam["target"], float) - eye
+        f /= np.linalg.norm(f)
+        r = np.cross(f, np.asarray(cam["up"], float))
+        r /= np.linalg.norm(r)
+        u = np.cross(r, f)
+        w, h = 160, 90
+        fy = 0.5 * h / math.tan(math.radians(cam["fovY"]) / 2)
+        _, depth = backend.render_rgbd(GL_TO_CV @ look_at_view(eye, eye + f, u), fy, fy, w / 2, h / 2, w, h)
+        ahead = depth[h // 3: 2 * h // 3, w // 3: 2 * w // 3]
+        ahead = ahead[np.isfinite(ahead)]
+        d = float(np.median(ahead)) if ahead.size else 3.0
+        self.d = d
+        axes = np.stack([r, u, f]).astype(np.float32)
+        self.boxes = [  # (centre, axes as rows, half sizes along them, colour)
+            (eye + f * 0.55 * d - r * 0.28 * d, axes, np.array([0.05, 0.6, 0.05]) * d, (0.95, 0.55, 0.10)),
+            (eye + f * 1.00 * d + r * 0.30 * d, axes, np.array([0.22, 0.30, 0.12]) * d, (0.20, 0.50, 0.95)),
+            (eye + f * 0.75 * d + u * 0.32 * d, axes, np.array([0.90, 0.035, 0.035]) * d, (0.25, 0.80, 0.40)),
+        ]
+        print(f"[render] BIM demo: 3 boxes placed around the surface {d:.2f} units ahead of the default camera",
+              flush=True)
+
+    def render(self, viewmat_cv, fx, fy, cx, cy, width, height):
+        rot, t = viewmat_cv[:3, :3], viewmat_cv[:3, 3]
+        o = -rot.T @ t
+        jj, ii = np.mgrid[0:height, 0:width].astype(np.float32)
+        # camera-z component 1, so the ray parameter equals the splat's z-depth
+        d = np.stack([(ii + 0.5 - cx) / fx, (jj + 0.5 - cy) / fy, np.ones_like(ii)], axis=-1) @ rot.astype(np.float32)
+        dn = d / np.linalg.norm(d, axis=-1, keepdims=True)
+        depth = np.full((height, width), np.inf, np.float32)
+        color = np.zeros((height, width, 3), np.float32)
+        edge_eps = 0.012 * self.d
+        for centre, axes, half, col in self.boxes:
+            ol = (o - centre) @ axes.T
+            dl = d @ axes.T
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t1 = (-half - ol) / dl
+                t2 = (half - ol) / dl
+            tmin, tmax = np.minimum(t1, t2), np.maximum(t1, t2)
+            tnear, tfar = tmin.max(-1), tmax.min(-1)
+            hit = (tnear <= tfar) & (tnear > 0) & (tnear < depth)
+            normal = axes[tmin.argmax(-1)]
+            shade = 0.35 + 0.65 * np.abs((normal * dn).sum(-1))
+            p = ol + np.nan_to_num(tnear)[..., None] * dl
+            edge = (np.abs(np.abs(p) - half) < edge_eps).sum(-1) >= 2
+            shade = np.where(edge, 0.15, shade)
+            depth = np.where(hit, tnear, depth)
+            color = np.where(hit[..., None], np.asarray(col, np.float32) * shade[..., None], color)
+        return color, depth
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +373,8 @@ class RenderService:
         self.render_ms = 0.0
         self._fps_window = []
         self._render_times = deque(maxlen=30)
+        self.bim = BimDemo(backend) if args.bim_demo else None
+        self.modes = BimDemo.MODES if self.bim else ("splat",)
 
     def warm_up(self):
         """The first gsplat call loads the CUDA kernels (~1 s). Pay that before
@@ -301,7 +391,8 @@ class RenderService:
     def info(self):
         return {"type": "info", "backend": self.backend.name, "numGaussians": self.backend.num_gaussians,
                 "shDegree": self.backend.sh_degree, "bounds": self.backend.bounds,
-                "defaultCamera": self.backend.default_camera, "maxSide": self.args.max_side}
+                "defaultCamera": self.backend.default_camera, "maxSide": self.args.max_side,
+                "modes": list(self.modes)}
 
     def parse_camera(self, msg):
         view = msg.get("view")
@@ -316,12 +407,24 @@ class RenderService:
         width, height = max(16, int(width * scale)), max(16, int(height * scale))
         quality = int(min(95, max(30, msg.get("quality", self.args.quality))))
         fy = 0.5 * height / math.tan(math.radians(fov_y) / 2)
-        return GL_TO_CV @ m, fy, fy, width / 2, height / 2, width, height, quality
+        mode = msg.get("mode") or self.modes[0]
+        if mode not in self.modes:
+            raise ValueError(f"mode must be one of {self.modes}")
+        return GL_TO_CV @ m, fy, fy, width / 2, height / 2, width, height, quality, mode
 
     def render_jpeg(self, cam):
-        viewmat, fx, fy, cx, cy, w, h, quality = cam
+        viewmat, fx, fy, cx, cy, w, h, quality, mode = cam
         t0 = time.perf_counter()
-        img = self.backend.render(viewmat, fx, fy, cx, cy, w, h)
+        if self.bim is not None and mode != "splat":
+            rgb, depth = self.backend.render_rgbd(viewmat, fx, fy, cx, cy, w, h)
+            bim_rgb, bim_depth = self.bim.render(viewmat, fx, fy, cx, cy, w, h)
+            front = bim_depth < depth  # BIM surface nearer than the scan: it wins
+            alpha = np.where(front, 0.92, 0.0)
+            if mode == "xray":  # also ghost the BIM parts the scan hides
+                alpha = np.where(np.isfinite(bim_depth) & ~front, 0.35, alpha)
+            img = ((rgb * (1 - alpha[..., None]) + bim_rgb * alpha[..., None]) * 255).astype(np.uint8)
+        else:
+            img = self.backend.render(viewmat, fx, fy, cx, cy, w, h)
         jpeg = encode_jpeg(img, quality)
         dt = time.perf_counter() - t0
         now = time.time()
@@ -440,6 +543,8 @@ def main():
     ap.add_argument("--max-side", type=int, default=1920)
     ap.add_argument("--quality", type=int, default=80)
     ap.add_argument("--background", default="0,0,0", help="r,g,b in 0..1")
+    ap.add_argument("--bim-demo", action="store_true",
+                    help="proof of concept: depth-merge a few BIM-like boxes into the stream (M cycles modes)")
     args = ap.parse_args()
 
     if args.port in OPEN_PROXY_PORTS and not args.allow_open_proxy_port:
