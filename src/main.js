@@ -1,4 +1,5 @@
 import { initSplatViewer, loadSplatScene } from './splatViewer.js';
+import { initRemoteViewer, parseSessionLink } from './remoteViewer.js';
 import {
   connectStreamBIM,
   applyCameraState,
@@ -10,6 +11,13 @@ const overlay = document.getElementById('overlay');
 const overlayMessage = document.getElementById('overlay-message');
 const modelPicker = document.getElementById('model-picker');
 const modelSelect = document.getElementById('model-select');
+const remoteToggle = document.getElementById('remote-toggle');
+const remoteForm = document.getElementById('remote-form');
+const remoteLink = document.getElementById('remote-link');
+const remoteConnect = document.getElementById('remote-connect');
+const remoteDisconnect = document.getElementById('remote-disconnect');
+const remoteStatus = document.getElementById('remote-status');
+const remoteStats = document.getElementById('remote-stats');
 
 function setOverlay(message, { error = false } = {}) {
   overlayMessage.textContent = message;
@@ -28,27 +36,43 @@ const initialDocumentId = params.get('documentId');
 
 const container = document.getElementById('splat-container');
 
+// The view currently on screen - the local WebGL splat viewer or the remote
+// stream. StreamBIM camera updates always go to its camera.
+let active = null;
+let lastCameraState = null;
+// Re-creates the local viewer for the current selection; null when there is
+// nothing to show locally (remote-only use).
+let showLocal = null;
+
+function teardown() {
+  if (active) {
+    try { active.viewer.stop(); } catch (_) {}
+    try { active.viewer.dispose(); } catch (_) {}
+    active = null;
+  }
+  container.innerHTML = '';
+}
+
+function activate(view) {
+  active = view;
+  // Re-apply the latest known camera state so the view snaps to the right
+  // position immediately after a swap.
+  if (lastCameraState) applyCameraState(view.camera, lastCameraState);
+}
+
+const streambim = connectStreamBIM({
+  onCameraState: (state) => {
+    lastCameraState = state;
+    if (active) applyCameraState(active.camera, state);
+  },
+});
+
 if (projectId) {
   // Document mode: StreamBIM-hosted .ply files, with an in-widget picker.
-  let currentCamera = null;
-  let currentViewer = null;
-  let lastCameraState = null;
-
   function loadModel(documentId) {
-    // Tear down any existing viewer before creating a new one.
-    if (currentViewer) {
-      try { currentViewer.stop(); } catch (_) {}
-      try { currentViewer.dispose(); } catch (_) {}
-      container.innerHTML = '';
-    }
-
+    teardown();
     const { viewer, camera } = initSplatViewer(container);
-    currentViewer = viewer;
-    currentCamera = camera;
-
-    // Re-apply the latest known camera state so the view snaps to the right
-    // position immediately after the scene swap.
-    if (lastCameraState) applyCameraState(camera, lastCameraState);
+    activate({ viewer, camera, kind: 'local' });
 
     setOverlay('Fetching scene file…');
 
@@ -58,6 +82,7 @@ if (projectId) {
         return loadSplatScene(viewer, url);
       })
       .then(() => {
+        if (!active || active.viewer !== viewer) return; // swapped out meanwhile
         viewer.start();
         hideOverlay();
       })
@@ -69,12 +94,7 @@ if (projectId) {
 
   setOverlay('Connecting to StreamBIM…');
 
-  connectStreamBIM({
-    onCameraState: (state) => {
-      lastCameraState = state;
-      if (currentCamera) applyCameraState(currentCamera, state);
-    },
-  })
+  streambim
     .then(() => {
       setOverlay('Loading document list…');
       return fetchPlyDocuments(projectId);
@@ -93,62 +113,162 @@ if (projectId) {
         opt.textContent = doc.filename || doc.name || doc.title || `Document ${doc.id}`;
         modelSelect.appendChild(opt);
       });
-      modelPicker.classList.remove('hidden');
 
       modelSelect.addEventListener('change', () => loadModel(modelSelect.value));
 
       // Auto-load: prefer ?documentId= param, otherwise first in list.
-      const autoId = initialDocumentId || docs[0].id;
-      modelSelect.value = autoId;
-      loadModel(autoId);
+      modelSelect.value = initialDocumentId || docs[0].id;
+      showLocal = () => {
+        modelPicker.classList.remove('hidden');
+        loadModel(modelSelect.value);
+      };
+      if (!active || active.kind !== 'remote') showLocal();
     })
     .catch((err) => {
       console.error('[main] setup error', err);
-      setOverlay('Error: ' + (err && err.message ? err.message : String(err)), { error: true });
+      if (!active || active.kind !== 'remote') {
+        setOverlay('Error: ' + (err && err.message ? err.message : String(err)), { error: true });
+      }
     });
 
 } else if (plyUrl) {
   // Direct URL mode: for development and testing outside StreamBIM.
   // StreamBIM camera sync is attempted but failures are non-fatal.
-  const { viewer, camera } = initSplatViewer(container);
-
-  let streambimReady = false;
-  let splatReady = false;
+  let streambimSettled = false;
+  let localReady = false;
 
   const maybeHideOverlay = () => {
-    if (streambimReady && splatReady) hideOverlay();
+    if (streambimSettled && localReady && active && active.kind === 'local') hideOverlay();
   };
 
-  setOverlay('Connecting to StreamBIM…');
-
-  connectStreamBIM({
-    onCameraState: (state) => applyCameraState(camera, state),
-  })
-    .then(() => {
-      streambimReady = true;
-      maybeHideOverlay();
-    })
+  streambim
     .catch((err) => {
       console.warn('[streambim] connection failed, using default camera', err);
-      streambimReady = true;
-      if (!splatReady) setOverlay('Could not connect to StreamBIM (see console). Loading splat scene…');
+      if (!localReady && active && active.kind === 'local') {
+        setOverlay('Could not connect to StreamBIM (see console). Loading splat scene…');
+      }
+    })
+    .then(() => {
+      streambimSettled = true;
       maybeHideOverlay();
     });
 
-  loadSplatScene(viewer, plyUrl)
-    .then(() => {
-      viewer.start();
-      splatReady = true;
-      maybeHideOverlay();
-    })
-    .catch((err) => {
-      console.error('[splatViewer] failed to load splat scene', err);
-      setOverlay('Failed to load splat scene: ' + (err && err.message ? err.message : err), { error: true });
-    });
+  showLocal = () => {
+    teardown();
+    localReady = false;
+    const { viewer, camera } = initSplatViewer(container);
+    activate({ viewer, camera, kind: 'local' });
+    setOverlay(streambimSettled ? 'Loading splat scene…' : 'Connecting to StreamBIM…');
+
+    loadSplatScene(viewer, plyUrl)
+      .then(() => {
+        if (!active || active.viewer !== viewer) return;
+        viewer.start();
+        localReady = true;
+        maybeHideOverlay();
+      })
+      .catch((err) => {
+        console.error('[splatViewer] failed to load splat scene', err);
+        setOverlay('Failed to load splat scene: ' + (err && err.message ? err.message : err), { error: true });
+      });
+  };
+  showLocal();
 
 } else {
-  setOverlay(
-    'Missing required parameters. Use ?projectId=P (StreamBIM project) or ?plyUrl=<url> (direct URL).',
-    { error: true }
-  );
+  // Remote-only: nothing to render locally, wait for a session link.
+  streambim.catch((err) => console.warn('[streambim] connection failed, using default camera', err));
+  remoteForm.classList.remove('hidden');
+  setOverlay('Paste a remote renderer session link (top right), or use ?projectId=P / ?plyUrl=<url>.');
+}
+
+// ---------------------------------------------------------------------------
+// Remote renderer (Vera). The session link comes from the launcher notebook;
+// connecting opens a relay popup on the Vera portal (where the Chalmers login
+// happens) that carries camera -> frames for this iframe.
+// ---------------------------------------------------------------------------
+const REMOTE_LINK_KEY = 'viewerstream.remoteLink';
+let relayWindow = null;
+
+function setRemoteStatus(text, error = false) {
+  remoteStatus.textContent = text;
+  remoteStatus.classList.toggle('error', error);
+}
+
+function setRemoteUi(connected) {
+  remoteConnect.classList.toggle('hidden', connected);
+  remoteDisconnect.classList.toggle('hidden', !connected);
+  remoteLink.disabled = connected;
+  remoteStats.classList.toggle('hidden', !connected);
+  remoteStats.textContent = '';
+}
+
+try {
+  remoteLink.value = localStorage.getItem(REMOTE_LINK_KEY) || '';
+} catch (_) {
+  // storage unavailable (e.g. blocked third-party storage) - just don't prefill
+}
+
+remoteToggle.addEventListener('click', () => remoteForm.classList.toggle('hidden'));
+
+remoteConnect.addEventListener('click', () => {
+  let session;
+  try {
+    session = parseSessionLink(remoteLink.value);
+  } catch (err) {
+    setRemoteStatus(err.message, true);
+    return;
+  }
+  try {
+    localStorage.setItem(REMOTE_LINK_KEY, remoteLink.value.trim());
+  } catch (_) {}
+
+  // Must happen synchronously in the click handler or popup blockers step in.
+  relayWindow = window.open(session.relayUrl, 'viewerstream-relay', 'popup,width=420,height=360');
+  if (!relayWindow) {
+    setRemoteStatus('Popup blocked - allow popups for this widget and try again.', true);
+    return;
+  }
+  startRemote(session.relayOrigin);
+});
+
+remoteDisconnect.addEventListener('click', () => stopRemote(null));
+
+function startRemote(relayOrigin) {
+  teardown();
+  modelPicker.classList.add('hidden');
+  setRemoteUi(true);
+  setRemoteStatus('Waiting for the renderer window…');
+  setOverlay('Waiting for the renderer window - log in to Vera there if asked.');
+
+  const remote = initRemoteViewer(container, {
+    relay: relayWindow,
+    relayOrigin,
+    onReady: (info) => {
+      // Outside StreamBIM nothing drives the camera: start at the scene's
+      // own default view instead of the generic one.
+      if (!lastCameraState && info.defaultCamera) {
+        const { position, target, up, fovY } = info.defaultCamera;
+        applyCameraState(remote.camera, { position, target, up, fov: fovY });
+      }
+      const what = info.numGaussians ? `${(info.numGaussians / 1e6).toFixed(1)}M gaussians` : 'test pattern';
+      setRemoteStatus(`Connected - ${info.backend}, ${what}`);
+      hideOverlay();
+    },
+    onStats: (text) => {
+      remoteStats.textContent = text;
+    },
+    onClosed: (reason) => stopRemote(reason),
+  });
+  activate({ ...remote, kind: 'remote' });
+  remote.viewer.start();
+}
+
+function stopRemote(reason) {
+  if (relayWindow && !relayWindow.closed) relayWindow.close();
+  relayWindow = null;
+  setRemoteUi(false);
+  setRemoteStatus(reason || 'Disconnected', Boolean(reason));
+  if (active && active.kind === 'remote') teardown();
+  if (showLocal) showLocal();
+  else setOverlay((reason ? reason + '. ' : '') + 'Paste a session link to reconnect.', { error: Boolean(reason) });
 }

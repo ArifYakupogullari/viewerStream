@@ -16,6 +16,17 @@
         <label for="model-select">Model</label>
         <select id="model-select"></select>
       </div>
+      <div id="remote-panel">
+        <button id="remote-toggle" type="button" title="Stream from a remote renderer (Vera)">Remote</button>
+        <div id="remote-form" class="hidden">
+          <input id="remote-link" type="url" spellcheck="false" autocomplete="off"
+                 placeholder="Session link from the Vera notebook" />
+          <button id="remote-connect" type="button">Connect</button>
+          <button id="remote-disconnect" type="button" class="hidden">Disconnect</button>
+          <div id="remote-status"></div>
+        </div>
+      </div>
+      <div id="remote-stats" class="hidden"></div>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>

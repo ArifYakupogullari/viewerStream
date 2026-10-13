@@ -3,3 +3,4 @@ dist/
 public/test-scenes/
 .DS_Store
 *.log
+__pycache__/

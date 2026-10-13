@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>viewerStream renderer</title>
+    <link rel="stylesheet" href="static/style.css" />
+  </head>
+  <body class="standalone">
+    <canvas id="view"></canvas>
+    <div id="hud"></div>
+    <div id="status">Connecting…</div>
+    <div id="help">
+      Drag: look around · Wheel / pinch: move · Right-drag / two fingers: pan ·
+      WASD + QE: move · Shift: faster · R: reset view
+    </div>
+    <!-- relative paths: OnDemand serves this under /rnode/<host>/<port>/ -->
+    <script type="module" src="static/viewer.js"></script>
+  </body>
+</html>

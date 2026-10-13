@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>viewerStream relay</title>
+    <link rel="stylesheet" href="static/style.css" />
+    <script id="vs-config" type="application/json">__VIEWERSTREAM_CONFIG__</script>
+  </head>
+  <body class="relay">
+    <main>
+      <h1>viewerStream relay</h1>
+      <p id="relay-status">Waiting for the StreamBIM widget…</p>
+      <p id="relay-stats"></p>
+      <p class="hint">
+        Keep this window open (it can sit behind StreamBIM). It carries the
+        stream between the Vera renderer and the widget, using your Vera
+        portal login. Close it to stop streaming.
+      </p>
+    </main>
+    <script type="module" src="static/relay.js"></script>
+  </body>
+</html>

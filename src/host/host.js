@@ -55,7 +55,8 @@ function connectWidget(plyUrl) {
   }
   widgetAPI = null;
 
-  iframe.src = '/?plyUrl=' + encodeURIComponent(plyUrl);
+  // Empty plyUrl = remote-only widget (paste a Vera session link in its panel).
+  iframe.src = plyUrl ? '/?plyUrl=' + encodeURIComponent(plyUrl) : '/';
 
   StreamBIM.connectToChild(iframe, hostMethods)
     .then(() => {
