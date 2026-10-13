@@ -298,13 +298,14 @@ class BimDemo:
         _, depth = backend.render_rgbd(GL_TO_CV @ look_at_view(eye, eye + f, u), fy, fy, w / 2, h / 2, w, h)
         ahead = depth[h // 3: 2 * h // 3, w // 3: 2 * w // 3]
         ahead = ahead[np.isfinite(ahead)]
-        d = float(np.median(ahead)) if ahead.size else 3.0
+        # 80th percentile: the deeper surfaces ahead, not a floater near the lens
+        d = float(np.percentile(ahead, 80)) if ahead.size else 3.0
         self.d = d
         axes = np.stack([r, u, f]).astype(np.float32)
         self.boxes = [  # (centre, axes as rows, half sizes along them, colour)
-            (eye + f * 0.55 * d - r * 0.28 * d, axes, np.array([0.05, 0.6, 0.05]) * d, (0.95, 0.55, 0.10)),
-            (eye + f * 1.00 * d + r * 0.30 * d, axes, np.array([0.22, 0.30, 0.12]) * d, (0.20, 0.50, 0.95)),
-            (eye + f * 0.75 * d + u * 0.32 * d, axes, np.array([0.90, 0.035, 0.035]) * d, (0.25, 0.80, 0.40)),
+            (eye + f * 0.50 * d - r * 0.30 * d, axes, np.array([0.04, 0.6, 0.04]) * d, (0.95, 0.55, 0.10)),
+            (eye + f * 1.00 * d + r * 0.12 * d, axes, np.array([0.18, 0.22, 0.15]) * d, (0.20, 0.50, 0.95)),
+            (eye + f * 0.70 * d + u * 0.40 * d, axes, np.array([0.90, 0.03, 0.03]) * d, (0.25, 0.80, 0.40)),
         ]
         print(f"[render] BIM demo: 3 boxes placed around the surface {d:.2f} units ahead of the default camera",
               flush=True)
