@@ -180,6 +180,9 @@ class GsplatBackend:
         self.opacities = torch.from_numpy(opacity).to(dev)
         self.sh = torch.from_numpy(sh).to(dev)
         self.background = torch.tensor(background, dtype=torch.float32, device=dev)[None]
+        # occlusion for the BIM merge uses only fairly opaque gaussians, so faint
+        # floaters don't punch holes in BIM geometry
+        self.solid = torch.from_numpy(opacity > 0.6).to(dev)
         self.num_gaussians = n
         lo, hi = np.percentile(means, [2, 98], axis=0)
         self.bounds = [lo.tolist(), hi.tolist()]
@@ -221,12 +224,17 @@ class GsplatBackend:
             dev = self.means.device
             viewmats = torch.tensor(viewmat_cv, dtype=torch.float32, device=dev)[None]
             ks = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=torch.float32, device=dev)[None]
-            out, alphas, _meta = self.rasterization(
+            common = dict(sh_degree=self.sh_degree, near_plane=0.01, far_plane=1e6)
+            colors, _, _ = self.rasterization(
                 self.means, self.quats, self.scales, self.opacities, self.sh,
-                viewmats, ks, width, height, sh_degree=self.sh_degree, near_plane=0.01, far_plane=1e6,
-                backgrounds=self.background, render_mode="RGB+ED",  # gsplat pads the depth channel
+                viewmats, ks, width, height, backgrounds=self.background, **common,
             )
-            rgb = out[0, ..., :3].clamp(0, 1)
+            m = self.solid
+            out, alphas, _ = self.rasterization(
+                self.means[m], self.quats[m], self.scales[m], self.opacities[m], self.sh[m],
+                viewmats, ks, width, height, render_mode="RGB+ED", **common,
+            )
+            rgb = colors[0, ..., :3].clamp(0, 1)
             depth = torch.where(alphas[0, ..., 0] > 0.5, out[0, ..., 3], torch.full_like(out[0, ..., 3], float("inf")))
             return rgb.cpu().numpy(), depth.cpu().numpy()
 
