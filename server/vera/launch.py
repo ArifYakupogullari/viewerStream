@@ -138,7 +138,8 @@ def start(ply=None, backend="gsplat", sif=DEFAULT_SIF, venv=DEFAULT_VENV, idle_t
         raise FileNotFoundError(f"PLY not found: {ply!r} (pass ply=..., or backend='fake' for a test pattern)")
     if not Path(sif).is_file():
         raise FileNotFoundError(f"container not found: {sif} (set VIEWERSTREAM_SIF)")
-    if not Path(venv, "bin", "python").exists():
+    # lexists: bin/python links to the container's interpreter, absent on the host
+    if not os.path.lexists(Path(venv, "bin", "python")):
         raise FileNotFoundError(f"venv not found: {venv} - run server/vera/setup_env.sh once")
 
     host = socket.gethostname()
