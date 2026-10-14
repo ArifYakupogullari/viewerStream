@@ -195,12 +195,16 @@ def main():
     link_file.write_text(session.text() + "\n")
     print(f"renderer up on {session.host}:{session.port}; link in {link_file} (cat it)", flush=True)
     if a.foreground:
+        # the link dies with the renderer: remove it so it can't be reused stale
         def forward(signum, _frame):
             session.stop()
+            link_file.unlink(missing_ok=True)
             sys.exit(0)
         signal.signal(signal.SIGTERM, forward)
         signal.signal(signal.SIGINT, forward)
-        sys.exit(session.proc.wait())
+        code = session.proc.wait()
+        link_file.unlink(missing_ok=True)
+        sys.exit(code)
 
 
 if __name__ == "__main__":
