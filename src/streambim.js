@@ -1,5 +1,6 @@
 import 'streambim-widget-api';
 import * as THREE from 'three';
+import { debugLog } from './debug.js';
 
 // The streambim-widget-api UMD bundle has no ES module exports - it detects
 // the absence of a CJS `module.exports`/AMD environment and instead assigns
@@ -29,7 +30,7 @@ const CONNECT_TIMEOUT_MS = 5000;
 export function connectStreamBIM({ onCameraState }) {
   const connected = StreamBIM.connectToParent(window.parent, {
     cameraChanged: (cameraState) => {
-      console.debug('[streambim] cameraChanged', cameraState);
+      debugLog('[streambim] cameraChanged', cameraState);
       onCameraState(cameraState);
     },
     pickedObject: () => {},
@@ -41,7 +42,7 @@ export function connectStreamBIM({ onCameraState }) {
   }).then(() => {
     return StreamBIM.API.getCameraState()
       .then((initialState) => {
-        console.debug('[streambim] initial cameraState', initialState);
+        debugLog('[streambim] initial cameraState', initialState);
         onCameraState(initialState);
       })
       .catch((err) => {
@@ -84,7 +85,7 @@ export function fetchPlyDocuments(projectId) {
     method: 'GET',
     path: `/project-${projectId}/api/v1/documents`,
   }).then((response) => {
-    console.debug('[streambim] documents response', response);
+    debugLog('[streambim] documents response', response);
     const docs = Array.isArray(response)
       ? response
       : (response && (response.documents || response.data || response.items)) || [];
@@ -95,12 +96,58 @@ export function fetchPlyDocuments(projectId) {
   });
 }
 
+/**
+ * The project this widget is embedded in, asked from StreamBIM itself, so the
+ * widget URL needs no ?projectId=. Resolves to null if StreamBIM can't say.
+ */
+export function getStreamBIMProjectId() {
+  if (!StreamBIM.API || typeof StreamBIM.API.getProjectId !== 'function') return Promise.resolve(null);
+  return Promise.resolve(StreamBIM.API.getProjectId()).catch((err) => {
+    console.warn('[streambim] getProjectId failed', err);
+    return null;
+  });
+}
+
+/**
+ * Origin of the StreamBIM page hosting this widget. StreamBIM's downloadlink
+ * endpoint returns a path relative to it (e.g.
+ * "/documents/1078/_download/scene.ply?microtoken=..."), which must not be
+ * resolved against this widget's own origin (github.io). ?streambimOrigin=
+ * in the widget URL overrides the browser-reported parent origin.
+ */
+export function streambimOrigin() {
+  const override = new URLSearchParams(window.location.search).get('streambimOrigin');
+  if (override) return new URL(override).origin;
+  const ancestors = window.location.ancestorOrigins; // parent first (Chrome, Safari)
+  if (ancestors && ancestors.length) return ancestors[0];
+  if (document.referrer) return new URL(document.referrer).origin; // Firefox
+  return null;
+}
+
+/**
+ * Absolute URLs to try, in order, for a downloadlink response. A relative
+ * path is tried at the StreamBIM origin first, then under /project-<id>/ in
+ * case it is relative to the project rather than the site.
+ */
+export function downloadUrlCandidates(link, projectId) {
+  if (/^https?:\/\//i.test(link)) return [link];
+  const origin = streambimOrigin();
+  if (!origin) {
+    throw new Error('StreamBIM returned a relative download link but its origin is unknown - '
+      + 'add ?streambimOrigin=https://<streambim host> to the widget URL');
+  }
+  const path = link.startsWith('/') ? link : '/' + link;
+  const candidates = [origin + path];
+  if (!path.startsWith('/project-')) candidates.push(`${origin}/project-${projectId}${path}`);
+  return candidates;
+}
+
 export function fetchDocumentDownloadUrl(projectId, documentId) {
   return StreamBIM.API.makeApiRequest({
     method: 'GET',
     path: `/project-${projectId}/api/v1/documents/${documentId}/downloadlink`,
   }).then((response) => {
-    console.debug('[streambim] downloadlink response', response);
+    debugLog('[streambim] downloadlink response', response);
     if (typeof response === 'string') return response;
     if (response && typeof response.url === 'string') return response.url;
     if (response && typeof response.downloadUrl === 'string') return response.downloadUrl;

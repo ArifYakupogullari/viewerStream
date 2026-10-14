@@ -619,8 +619,9 @@ def main():
     ap.add_argument("--allowed-origin", action="append", default=None,
                     help="Origin allowed to open /ws (default: https://vera.c3se.chalmers.se)")
     ap.add_argument("--widget-origin", action="append", default=None,
-                    help="widget origin the /relay popup will talk to (default: GitHub Pages + local dev)")
-    ap.add_argument("--dev", action="store_true", help="also allow http://localhost / 127.0.0.1 origins on /ws")
+                    help="widget origin the /relay popup will talk to (default: the GitHub Pages widget; --dev adds localhost:5173)")
+    ap.add_argument("--dev", action="store_true",
+                    help="local development: allow localhost origins on /ws and the local widget dev server in /relay")
     ap.add_argument("--allow-open-proxy-port", action="store_true",
                     help="permit ports 8888-8988 (publicly exposed by proxy.c3se.chalmers.se)")
     ap.add_argument("--idle-timeout", type=int, default=1800, help="exit after N s with no clients")
@@ -640,8 +641,9 @@ def main():
         args.secret = secrets.token_urlsafe(24)
         print(f"[render] no secret given, generated one: {args.secret}", flush=True)
     args.allowed_origin = args.allowed_origin or ["https://vera.c3se.chalmers.se"]
-    args.widget_origin = args.widget_origin or [
-        "https://arifyakupogullari.github.io", "http://localhost:5173", "http://127.0.0.1:5173"]
+    args.widget_origin = args.widget_origin or ["https://arifyakupogullari.github.io"]
+    if args.dev:  # the local Vite dev server / fake StreamBIM host
+        args.widget_origin += ["http://localhost:5173", "http://127.0.0.1:5173"]
     background = [float(x) for x in args.background.split(",")]
     prefix = "/" + args.prefix.strip("/") + "/" if args.prefix.strip("/") else "/"
 

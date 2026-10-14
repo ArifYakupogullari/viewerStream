@@ -13,23 +13,32 @@ splat viewer's Three.js camera every time it changes.
 ## How it works
 
 - `index.html` / `src/main.js` - the widget itself. On load it:
-  1. Reads `?plyUrl=<url>` from the page's query string and loads that splat
-     scene with `@mkkellogg/gaussian-splats-3d`.
-  2. Connects to StreamBIM via `StreamBIM.connectToParent` (`src/streambim.js`).
-     If no parent responds within 5s (e.g. the widget is opened standalone),
-     the connection attempt is abandoned for UI purposes and the splat scene
-     is shown with its default camera.
-  3. Subscribes to StreamBIM's `cameraChanged` event (and reads
+  1. Connects to StreamBIM via `StreamBIM.connectToParent` (`src/streambim.js`).
+  2. **Inside StreamBIM (document mode):** takes the project from
+     `?projectId=` or, if absent, from StreamBIM itself (`getProjectId()`),
+     lists the project's `.ply` documents through `makeApiRequest()` (model
+     picker if there are several, `?documentId=` preselects), asks
+     `/project-<id>/api/v1/documents/<doc>/downloadlink` for a time-limited
+     link, resolves it against StreamBIM's origin (it is a relative path like
+     `/documents/1078/_download/scene.ply?microtoken=…`; falls back to
+     `/project-<id>/…` if the site-root form fails), downloads it once with a
+     progress readout and loads it from memory. Access control stays inside
+     StreamBIM.
+  3. **`?plyUrl=<url>`:** loads that scene directly (testing outside StreamBIM).
+  4. **Outside StreamBIM** (no parent answers within 5 s): shows the Remote
+     panel for a Vera session link.
+  5. Subscribes to StreamBIM's `cameraChanged` event (and reads
      `getCameraState()` once on connect) and applies the resulting
      position/orientation/FOV to the splat viewer's camera via
      `applyCameraState()`.
 - Camera sync is **one-way**: StreamBIM drives the splat camera. The widget
   never calls `setCameraState`/`setCameraPosition`.
-- `host/index.html` / `src/host/host.js` - a local "fake StreamBIM" dev
+- `host/index.html` / `src/host/host.js` - a "fake StreamBIM" dev
   harness. It loads the widget in an iframe via `StreamBIM.connectToChild`,
-  stubs the StreamBIM API methods the widget might call, and provides manual
-  controls (position/target/up/FOV, a quaternion-mode toggle, and an orbit
-  animation) to fire fake `cameraChanged` events at the widget.
+  stubs the StreamBIM API methods the widget calls (including the document
+  endpoints, answering like StreamBIM with a relative token link), and
+  provides manual controls (position/target/up/FOV, a quaternion-mode toggle,
+  and an orbit animation) to fire fake `cameraChanged` events at the widget.
 
 ## Remote rendering on Vera
 
@@ -70,8 +79,8 @@ StreamBIM ──camera──▶ widget (iframe) ──postMessage──▶ relay
   send the portal login cookie. So **Connect** opens a small popup on the
   portal (log in there if asked); the popup holds the WebSocket and relays
   camera ↔ frames with the widget via `postMessage`, accepting messages only
-  from its opener on an allowed widget origin (`--widget-origin`, default:
-  GitHub Pages + local dev). Keep the popup open while streaming.
+  from its opener on an allowed widget origin (`--widget-origin`; default:
+  the GitHub Pages widget, plus `localhost:5173` with `--dev`). Keep the popup open while streaming.
 - The portal requires a Swedish university network: eduroam or the Chalmers
   VPN, including on phones.
 - The link only works while that renderer runs; it stops on
@@ -117,18 +126,11 @@ fake StreamBIM host (`/host/index.html`) with an empty plyUrl and paste
 
 ```sh
 npm install
+python3 tests/make_test_ply.py public/test-scenes/test-scene.ply   # small test splat (npm run test:scene)
 ```
 
-For local testing you need a `.ply` Gaussian Splat scene reachable by the dev
-server. By default `host/index.html` points at
-`/test-scenes/point_cloud.ply`, which is expected to be a symlink/file under
-`public/test-scenes/` (gitignored - this directory is for local dev only and
-is not part of the deployable widget).
-
-```sh
-mkdir -p public/test-scenes
-ln -s /path/to/your/point_cloud.ply public/test-scenes/point_cloud.ply
-```
+`public/test-scenes/` is gitignored and never part of the deployed widget; the
+fake StreamBIM host serves `test-scene.ply` as the project's "document".
 
 ## Development
 
@@ -136,31 +138,67 @@ ln -s /path/to/your/point_cloud.ply public/test-scenes/point_cloud.ply
 npm run dev
 ```
 
-- Open `http://localhost:5173/host/index.html` to use the fake StreamBIM host.
-  It loads the widget (`/?plyUrl=...`) in an iframe and lets you drive the
-  camera manually or via the "Animate orbit" toggle.
-- Open `http://localhost:5173/?plyUrl=/test-scenes/point_cloud.ply` directly
-  to view the widget standalone (it will log a connection warning since there
-  is no StreamBIM parent, but the splat scene still renders with a default
-  camera).
+- `http://localhost:5173/host/index.html` - the fake StreamBIM host. Empty
+  plyUrl = document mode (as inside StreamBIM); drive the camera manually or
+  with "Animate orbit"; the widget's Remote panel connects to a renderer.
+- `http://localhost:5173/?plyUrl=/test-scenes/test-scene.ply` - the widget
+  standalone, default camera.
 
-## Production build
+Debug output (`[streambim] cameraChanged …` logs, fps/latency readout) is on
+in the dev server and the dev channel; in production add `?debug=1` to the
+widget URL.
+
+### End-to-end test
+
+`npm run test:e2e` (`tests/e2e/relay.mjs`, Playwright) loads the widget in the
+fake host and checks document mode (project id, document list, relative
+token link, download, render) and remote mode (relay popup, camera sync,
+popup close, bad secret, malformed link). It needs the test scene, the dev
+server and a fake renderer:
 
 ```sh
-npm run build
-npm run preview   # smoke-test the static dist/ output
+VIEWERSTREAM_SECRET=devsecret123 python server/render_server.py --backend fake --host 127.0.0.1 --port 8765 --dev &
+npx vite --port 5173 --strictPort --host localhost &
+npm run test:e2e        # CHROMIUM_PATH=/path/to/chrome to use a local browser
 ```
 
-`dist/index.html` (plus its hashed assets) is the deployable widget. Host it
-anywhere and point a StreamBIM widget iframe at it with a `?plyUrl=` query
-parameter pointing to a hosted `.ply` file, e.g.:
+## Channels and deployment
+
+`.github/workflows/deploy.yml` runs the end-to-end test on every push and PR.
+Only pushes to `main` deploy, and only after the test passes. GitHub Pages
+then serves two builds of the same commit:
+
+| URL | Build | Use |
+|---|---|---|
+| `https://arifyakupogullari.github.io/viewerStream/` | `npm run build` (widget only, quiet) | **production** - what StreamBIM projects point at |
+| `https://arifyakupogullari.github.io/viewerStream/dev/` | `npm run build:dev` (debug on) | testing; fake host at `dev/host/` |
+
+Asset paths are relative (`base: './'`), so both work under their subpaths.
+Work on a branch, merge to `main` to release.
+
+## StreamBIM sandbox setup
+
+Widget URL to register in the project:
 
 ```
-https://your-host/widget/?plyUrl=https://your-cdn/scenes/scene.ply
+https://arifyakupogullari.github.io/viewerStream/
 ```
 
-`dist/host/index.html` is the dev harness; it can be left out of any
-production deployment.
+No parameters are needed: the widget asks StreamBIM for the project and
+loads the project's `.ply` document(s). Optional: `?projectId=` (if
+`getProjectId()` isn't available), `?documentId=` (preselect a document),
+`?streambimOrigin=https://<host>` (if the browser hides the parent origin),
+`?debug=1` (console logging + stats).
+
+What the widget needs from the StreamBIM side:
+- the `.ply` uploaded as a project document, readable by the users who should
+  see it;
+- the download URL from `downloadlink` must be fetchable from the widget's
+  origin (`https://arifyakupogullari.github.io`), i.e. CORS allowed; a
+  blocked download shows "download blocked or unreachable";
+- for the remote (Vera) renderer only: the widget iframe must be allowed to
+  open popups (`allow-popups`, `allow-popups-to-escape-sandbox` if it is
+  sandboxed) - the Connect button opens the Vera portal in a small window.
 
 ## Open risks / follow-ups
 
@@ -168,10 +206,13 @@ production deployment.
   `applyCameraState()` (in `src/streambim.js`) handles either a
   quaternion-based (`{ position, quaternion: [x,y,z,w] }`) or a
   target/up-based (`{ position, target, up }`) shape, plus an optional `fov`
-  (and `near`/`far`). Every `cameraChanged` payload is logged via
-  `console.debug('[streambim] cameraChanged', ...)`, and unrecognized shapes
+  (and `near`/`far`). With `?debug=1` every `cameraChanged` payload is
+  logged (`[streambim] cameraChanged …`), and unrecognized shapes always
   produce a `console.warn` - capture a real payload and refine the adapter if
   needed.
+- **Download path base and CORS are unverified against real StreamBIM.** The
+  relative `downloadlink` path is tried at the StreamBIM origin, then under
+  `/project-<id>/`; with `?debug=1` the console shows which URL was tried.
 - **FOV units/orientation**: Three.js `PerspectiveCamera.fov` is *vertical*
   FOV in degrees. The adapter treats `fov <= Math.PI` as radians and converts,
   but a horizontal-vs-vertical FOV mismatch (or aspect-ratio differences

@@ -47,6 +47,20 @@ const hostMethods = {
   setStyles: () => true,
   setSkyColor: () => true,
   setNavigationMode: () => true,
+  // Document endpoints, shaped like StreamBIM's: the downloadlink is a path
+  // relative to the StreamBIM origin with a short-lived token, e.g.
+  // "/documents/1078/_download/scene.ply?microtoken=...". Here it points at
+  // the dev server's public/test-scenes/test-scene.ply (tests/make_test_ply.py).
+  makeApiRequest: ({ method, path }) => {
+    logEvent(`widget -> makeApiRequest ${method} ${path}`);
+    if (/\/api\/v1\/documents$/.test(path)) {
+      return [{ id: 1, filename: 'test-scene.ply' }, { id: 2, filename: 'notes.pdf' }];
+    }
+    if (/\/api\/v1\/documents\/1\/downloadlink$/.test(path)) {
+      return '/test-scenes/test-scene.ply?microtoken=fake-token';
+    }
+    throw new Error('fake host: no such endpoint ' + path);
+  },
 };
 
 function connectWidget(plyUrl) {
@@ -55,8 +69,10 @@ function connectWidget(plyUrl) {
   }
   widgetAPI = null;
 
-  // Empty plyUrl = remote-only widget (paste a Vera session link in its panel).
-  iframe.src = plyUrl ? '/?plyUrl=' + encodeURIComponent(plyUrl) : '/';
+  // Empty plyUrl = StreamBIM document mode (project id from getProjectId,
+  // documents from makeApiRequest below); the Remote panel works in both.
+  // relative, so it also works in the deployed dev channel (/viewerStream/dev/host/)
+  iframe.src = '../?debug=1' + (plyUrl ? '&plyUrl=' + encodeURIComponent(plyUrl) : '');
 
   StreamBIM.connectToChild(iframe, hostMethods)
     .then(() => {

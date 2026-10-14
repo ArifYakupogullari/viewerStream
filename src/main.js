@@ -1,10 +1,13 @@
-import { initSplatViewer, loadSplatScene } from './splatViewer.js';
+import { initSplatViewer, loadSplatScene, fetchScene, PLY_FORMAT } from './splatViewer.js';
 import { initRemoteViewer, parseSessionLink } from './remoteViewer.js';
+import { DEBUG, debugLog } from './debug.js';
 import {
   connectStreamBIM,
   applyCameraState,
   fetchPlyDocuments,
   fetchDocumentDownloadUrl,
+  getStreamBIMProjectId,
+  downloadUrlCandidates,
 } from './streambim.js';
 
 const overlay = document.getElementById('overlay');
@@ -31,7 +34,7 @@ function hideOverlay() {
 
 const params = new URLSearchParams(window.location.search);
 const plyUrl = params.get('plyUrl');
-const projectId = params.get('projectId');
+const projectIdParam = params.get('projectId');
 const initialDocumentId = params.get('documentId');
 
 const container = document.getElementById('splat-container');
@@ -67,19 +70,45 @@ const streambim = connectStreamBIM({
   },
 });
 
-if (projectId) {
-  // Document mode: StreamBIM-hosted .ply files, with an in-widget picker.
+// Document mode: the project's .ply files stored in StreamBIM (access stays
+// under StreamBIM's own permissions), with an in-widget picker.
+function startDocumentMode(projectId) {
+  // StreamBIM returns a time-limited, usually relative download link: resolve
+  // it against StreamBIM's origin, download it once with progress, and load
+  // the scene from memory. If the site-root form fails, retry once with a
+  // fresh link under /project-<id>/.
+  async function downloadDocument(documentId) {
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const link = await fetchDocumentDownloadUrl(projectId, documentId);
+      const candidates = downloadUrlCandidates(link, projectId);
+      if (attempt >= candidates.length) break;
+      debugLog('[main] downloadlink', link, '-> trying', candidates[attempt]);
+      try {
+        return await fetchScene(candidates[attempt], (got, total) => {
+          setOverlay(total
+            ? `Downloading scene… ${Math.round((100 * got) / total)}%`
+            : `Downloading scene… ${(got / 1e6).toFixed(0)} MB`);
+        });
+      } catch (err) {
+        lastErr = err;
+        debugLog('[main] download attempt failed', candidates[attempt], err);
+      }
+    }
+    throw lastErr;
+  }
+
   function loadModel(documentId) {
     teardown();
     const { viewer, camera } = initSplatViewer(container);
     activate({ viewer, camera, kind: 'local' });
-
     setOverlay('Fetching scene file…');
 
-    fetchDocumentDownloadUrl(projectId, documentId)
-      .then((url) => {
+    downloadDocument(documentId)
+      .then((blobUrl) => {
         setOverlay('Loading scene…');
-        return loadSplatScene(viewer, url);
+        // addSplatScene returns the library's own AbortablePromise (no .finally)
+        return Promise.resolve(loadSplatScene(viewer, blobUrl, PLY_FORMAT)).finally(() => URL.revokeObjectURL(blobUrl));
       })
       .then(() => {
         if (!active || active.viewer !== viewer) return; // swapped out meanwhile
@@ -92,13 +121,8 @@ if (projectId) {
       });
   }
 
-  setOverlay('Connecting to StreamBIM…');
-
-  streambim
-    .then(() => {
-      setOverlay('Loading document list…');
-      return fetchPlyDocuments(projectId);
-    })
+  setOverlay('Loading document list…');
+  return fetchPlyDocuments(projectId)
     .then((docs) => {
       if (docs.length === 0) {
         setOverlay('No .ply documents found in this project.', { error: true });
@@ -130,8 +154,17 @@ if (projectId) {
         setOverlay('Error: ' + (err && err.message ? err.message : String(err)), { error: true });
       }
     });
+}
 
-} else if (plyUrl) {
+// Nothing to show locally: offer the remote renderer panel.
+function showRemoteOnly(message) {
+  remoteForm.classList.remove('hidden');
+  if (!active || active.kind !== 'remote') {
+    setOverlay(message || 'Paste a remote renderer session link (top right), or use ?projectId=P / ?plyUrl=<url>.');
+  }
+}
+
+if (plyUrl) {
   // Direct URL mode: for development and testing outside StreamBIM.
   // StreamBIM camera sync is attempted but failures are non-fatal.
   let streambimSettled = false;
@@ -175,10 +208,21 @@ if (projectId) {
   showLocal();
 
 } else {
-  // Remote-only: nothing to render locally, wait for a session link.
-  streambim.catch((err) => console.warn('[streambim] connection failed, using default camera', err));
-  remoteForm.classList.remove('hidden');
-  setOverlay('Paste a remote renderer session link (top right), or use ?projectId=P / ?plyUrl=<url>.');
+  // Inside StreamBIM: the project comes from ?projectId= or from StreamBIM
+  // itself; its .ply documents are listed and loaded. Outside StreamBIM (no
+  // parent answers) the widget falls back to the remote renderer panel.
+  setOverlay('Connecting to StreamBIM…');
+  streambim.then(
+    () => Promise.resolve(projectIdParam || getStreamBIMProjectId()).then((projectId) => {
+      if (projectId) return startDocumentMode(projectId);
+      showRemoteOnly('Connected to StreamBIM but no project id - add ?projectId=… or use a remote renderer (top right).');
+      return undefined;
+    }),
+    (err) => {
+      console.warn('[streambim] connection failed', err);
+      showRemoteOnly();
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +242,7 @@ function setRemoteUi(connected) {
   remoteConnect.classList.toggle('hidden', connected);
   remoteDisconnect.classList.toggle('hidden', !connected);
   remoteLink.disabled = connected;
-  remoteStats.classList.toggle('hidden', !connected);
+  remoteStats.classList.toggle('hidden', !(connected && DEBUG));
   remoteStats.textContent = '';
 }
 

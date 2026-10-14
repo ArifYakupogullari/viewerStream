@@ -1,8 +1,13 @@
-name: Deploy to GitHub Pages
+name: Test and deploy
 
+# Every push and PR runs the end-to-end test (widget in the fake StreamBIM
+# host + relay popup + a GPU-free renderer). Only pushes to main deploy, and
+# only if the test passed. GitHub Pages then serves two channels:
+#   /viewerStream/       production widget  (what StreamBIM projects point at)
+#   /viewerStream/dev/   dev build: debug output on + fake StreamBIM host at dev/host/
 on:
   push:
-    branches: [main]
+  pull_request:
 
 permissions:
   contents: read
@@ -10,11 +15,50 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: npm ci
+      - run: pip install aiohttp numpy simplejpeg pillow
+      - run: npx playwright install --with-deps chromium
+      - run: python tests/make_test_ply.py public/test-scenes/test-scene.ply
+
+      - name: Start fake renderer and widget dev server
+        run: |
+          VIEWERSTREAM_SECRET=devsecret123 python server/render_server.py --backend fake \
+            --host 127.0.0.1 --port 8765 --dev > renderer.log 2>&1 &
+          npx vite --port 5173 --strictPort --host localhost > vite.log 2>&1 &
+          for i in $(seq 60); do
+            curl -sf http://127.0.0.1:8765/health > /dev/null \
+              && curl -sf http://localhost:5173/host/index.html > /dev/null && exit 0
+            sleep 1
+          done
+          cat renderer.log vite.log
+          exit 1
+
+      - run: npm run test:e2e
+
+      - name: Both channels build
+        run: npm run build && npm run build:dev
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -28,7 +72,7 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm run build
+      - run: npm run build && npm run build:dev
 
       - uses: actions/upload-pages-artifact@v3
         with:
