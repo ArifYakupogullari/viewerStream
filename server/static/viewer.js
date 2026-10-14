@@ -7,6 +7,7 @@ const canvas = document.getElementById('view');
 const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
 const hudEl = document.getElementById('hud');
+const sceneEl = document.getElementById('scene');
 
 const secret =
   new URLSearchParams(location.search).get('s') || new URLSearchParams(location.hash.slice(1)).get('s');
@@ -54,6 +55,9 @@ let step = 0.1; // world units per "nudge", derived from scene size
 let modes = ['splat'];
 let mode = 'splat';
 let statusBase = '';
+let scenes = [];
+let scene = 0;
+let backendName = '';
 
 function resetCamera() {
   if (!home) return;
@@ -125,6 +129,7 @@ canvas.addEventListener(
 const keys = new Set();
 window.addEventListener('keydown', (e) => {
   if (e.key === 'r' || e.key === 'R') resetCamera();
+  if ((e.key === 'n' || e.key === 'N') && scenes.length > 1) selectScene((scene + 1) % scenes.length);
   if ((e.key === 'm' || e.key === 'M') && modes.length > 1) {
     mode = modes[(modes.indexOf(mode) + 1) % modes.length];
     setStatus(`${statusBase} · ${mode}`);
@@ -160,7 +165,7 @@ function getView() {
     canvas.height = h;
   }
   if (!w || !h) return null;
-  return { view: lookAtView(eye, add(eye, fwd), up), fovY, mode, ...requestSize(w, h, maxSide) };
+  return { view: lookAtView(eye, add(eye, fwd), up), fovY, mode, scene, ...requestSize(w, h, maxSide) };
 }
 
 let ws = null;
@@ -175,6 +180,27 @@ const loop = createFrameLoop({
       hudEl.textContent = stats.text();
     });
   },
+});
+
+/** Switch scene: its own start camera and step size; the frame loop picks it up. */
+function selectScene(i) {
+  scene = i;
+  sceneEl.value = String(i);
+  const sc = scenes[i];
+  home = sc.defaultCamera;
+  const [lo, hi] = sc.bounds;
+  // walking-scale steps: 1% of the scene, but never more than 0.5 units
+  // (whole-floor sites are tens of metres across; indoors that overshot walls)
+  step = Math.min(0.5, Math.max(0.02, Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) * 0.01));
+  resetCamera();
+  const count = sc.numGaussians ? `${(sc.numGaussians / 1e6).toFixed(1)}M gaussians` : 'test pattern';
+  statusBase = [backendName, sc.name, count].filter(Boolean).join(' · ');
+  setStatus(modes.length > 1 ? `${statusBase} · ${mode} (M: switch view)` : statusBase);
+  loop.refresh();
+}
+sceneEl.addEventListener('change', () => {
+  selectScene(Number(sceneEl.value));
+  sceneEl.blur(); // keep WASD / M / N going to the viewer
 });
 
 function connect() {
@@ -192,19 +218,16 @@ function connect() {
     }
     const msg = JSON.parse(e.data);
     if (msg.type === 'info') {
-      home = msg.defaultCamera;
       maxSide = msg.maxSide || maxSide;
-      const [lo, hi] = msg.bounds;
-      // walking-scale steps: 1% of the scene, but never more than 0.5 units
-      // (whole-floor sites are tens of metres across; indoors that overshot walls)
-      step = Math.min(0.5, Math.max(0.02, Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) * 0.01));
-      resetCamera();
-      const count = msg.numGaussians ? `${(msg.numGaussians / 1e6).toFixed(1)}M gaussians` : 'test pattern';
       modes = msg.modes || ['splat'];
       mode = modes[0];
-      statusBase = `${msg.backend} · ${count}`;
-      setStatus(modes.length > 1 ? `${statusBase} · ${mode} (M: switch view)` : statusBase);
-      loop.refresh();
+      backendName = msg.backend;
+      scenes = msg.scenes
+        || [{ name: '', numGaussians: msg.numGaussians, bounds: msg.bounds, defaultCamera: msg.defaultCamera }];
+      sceneEl.innerHTML = '';
+      scenes.forEach((sc, i) => sceneEl.add(new Option(sc.name || `Scene ${i + 1}`, String(i))));
+      sceneEl.classList.toggle('hidden', scenes.length < 2);
+      selectScene(0);
       loop.start();
     } else if (msg.type === 'error') {
       setStatus(msg.message, true);

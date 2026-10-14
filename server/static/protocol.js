@@ -2,7 +2,7 @@
 // the viewerStream widget (imported through Vite), so both speak exactly the
 // same camera/frame format.
 //
-//   client -> server  JSON {type:'camera', seq, view, fovY, width, height}
+//   client -> server  JSON {type:'camera', seq, view, fovY, width, height[, mode, scene]}
 //                     view = Three.js camera.matrixWorldInverse.elements
 //                     (column-major, camera looking down -Z, +Y up)
 //   server -> client  binary: uint32 little-endian seq, then JPEG bytes
@@ -10,8 +10,8 @@
 export const MAX_SIDE = 1920;
 const LOST_FRAME_MS = 3000;
 
-export function cameraMessage(seq, { view, fovY, width, height, mode }) {
-  return JSON.stringify({ type: 'camera', seq, view: Array.from(view), fovY, width, height, mode });
+export function cameraMessage(seq, { view, fovY, width, height, mode, scene }) {
+  return JSON.stringify({ type: 'camera', seq, view: Array.from(view), fovY, width, height, mode, scene });
 }
 
 export function parseFrame(buffer) {
@@ -25,8 +25,8 @@ export function requestSize(width, height, maxSide = MAX_SIDE) {
   return { width: Math.max(16, Math.round(width * scale)), height: Math.max(16, Math.round(height * scale)) };
 }
 
-function viewKey({ view, fovY, width, height, mode }) {
-  let key = `${width}x${height}@${fovY.toFixed(3)}:${mode || ''}`;
+function viewKey({ view, fovY, width, height, mode, scene }) {
+  let key = `${width}x${height}@${fovY.toFixed(3)}:${mode || ''}:${scene || 0}`;
   for (let i = 0; i < 16; i++) key += ',' + view[i].toFixed(5);
   return key;
 }

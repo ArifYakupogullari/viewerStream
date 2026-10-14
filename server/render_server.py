@@ -282,7 +282,8 @@ class FakeBackend:
     checked without CUDA. Red line = +X axis, blue line = +Z axis."""
     name = "fake"
 
-    def __init__(self, background):
+    def __init__(self, background, tint=0):
+        self.tint = tint
         self.num_gaussians = 0
         self.sh_degree = 0
         self.bounds = [[-10, 0, -10], [10, 3, 10]]
@@ -309,7 +310,8 @@ class FakeBackend:
         px = origin[0] + hit_t * d[..., 0]
         pz = origin[2] + hit_t * d[..., 2]
         checker = (np.floor(px) + np.floor(pz)) % 2
-        ground = np.where(checker[..., None] > 0, 0.85, 0.35) * np.ones(3, np.float32)
+        light = np.array([[0.85, 0.85, 0.85], [0.95, 0.80, 0.55], [0.60, 0.85, 0.65], [0.75, 0.70, 0.95]][self.tint % 4], np.float32)
+        ground = np.where(checker[..., None] > 0, light, 0.35 * light)
         ground = np.where((np.abs(pz) < 0.04)[..., None], np.array([0.9, 0.1, 0.1], np.float32), ground)
         ground = np.where((np.abs(px) < 0.04)[..., None], np.array([0.1, 0.2, 0.9], np.float32), ground)
         fade = np.exp(-np.nan_to_num(hit_t, posinf=1e3) / 60.0)[..., None]
@@ -433,9 +435,20 @@ except ImportError:  # pragma: no cover - fallback path
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
+def scene_name(ply_path):
+    """'gs-room it 50000' from .../gs-room/point_cloud/iteration_50000/point_cloud.ply"""
+    p = Path(ply_path)
+    if p.parent.name.startswith("iteration_") and len(p.parents) >= 3:
+        return f"{p.parents[2].name} it {p.parent.name[len('iteration_'):]}"
+    return p.stem
+
+
 class RenderService:
-    def __init__(self, backend, args):
-        self.backend = backend
+    def __init__(self, scenes, args):
+        """scenes: list of (name, backend); scene 0 is the default."""
+        self.scenes = [{"name": name, "backend": b, "bim": BimDemo(b) if args.bim_demo else None}
+                       for name, b in scenes]
+        self.backend = self.scenes[0]["backend"]
         self.args = args
         self.secret = args.secret
         # one GPU, one render at a time; the event loop stays responsive
@@ -447,17 +460,18 @@ class RenderService:
         self.render_ms = 0.0
         self._fps_window = []
         self._render_times = deque(maxlen=30)
-        self.bim = BimDemo(backend) if args.bim_demo else None
-        self.modes = BimDemo.MODES if self.bim else ("splat",)
+        self.modes = BimDemo.MODES if args.bim_demo else ("splat",)
 
     def warm_up(self):
         """The first gsplat call loads the CUDA kernels (~1 s). Pay that before
         anyone connects, then reset the stats so they reflect real frames."""
-        cam = self.backend.default_camera
-        view = look_at_view(cam["position"], cam["target"], cam["up"]).T.flatten().tolist()
         t0 = time.perf_counter()
-        for _ in range(2):
-            self.render_jpeg(self.parse_camera({"view": view, "fovY": cam["fovY"], "width": 640, "height": 360}))
+        for i, scene in enumerate(self.scenes):
+            cam = scene["backend"].default_camera
+            view = look_at_view(cam["position"], cam["target"], cam["up"]).T.flatten().tolist()
+            for _ in range(2):
+                self.render_jpeg(self.parse_camera(
+                    {"view": view, "fovY": cam["fovY"], "width": 640, "height": 360, "scene": i}))
         print(f"[render] warm-up done in {time.perf_counter() - t0:.1f}s", flush=True)
         self.frames, self.fps, self.render_ms = 0, 0.0, 0.0
         self._fps_window, self._render_times = [], deque(maxlen=30)
@@ -466,7 +480,10 @@ class RenderService:
         return {"type": "info", "backend": self.backend.name, "numGaussians": self.backend.num_gaussians,
                 "shDegree": self.backend.sh_degree, "bounds": self.backend.bounds,
                 "defaultCamera": self.backend.default_camera, "maxSide": self.args.max_side,
-                "modes": list(self.modes)}
+                "modes": list(self.modes),
+                "scenes": [{"name": sc["name"], "numGaussians": sc["backend"].num_gaussians,
+                            "shDegree": sc["backend"].sh_degree, "bounds": sc["backend"].bounds,
+                            "defaultCamera": sc["backend"].default_camera} for sc in self.scenes]}
 
     def parse_camera(self, msg):
         view = msg.get("view")
@@ -484,31 +501,35 @@ class RenderService:
         mode = msg.get("mode") or self.modes[0]
         if mode not in self.modes:
             raise ValueError(f"mode must be one of {self.modes}")
-        return GL_TO_CV @ m, fy, fy, width / 2, height / 2, width, height, quality, mode
+        scene = int(msg.get("scene") or 0)
+        if not 0 <= scene < len(self.scenes):
+            raise ValueError(f"scene must be 0..{len(self.scenes) - 1}")
+        return GL_TO_CV @ m, fy, fy, width / 2, height / 2, width, height, quality, mode, scene
 
     def render_jpeg(self, cam):
-        viewmat, fx, fy, cx, cy, w, h, quality, mode = cam
+        viewmat, fx, fy, cx, cy, w, h, quality, mode, scene = cam
+        backend, bim = self.scenes[scene]["backend"], self.scenes[scene]["bim"]
         t0 = time.perf_counter()
-        if self.bim is not None and mode != "splat" and self.backend.name == "gsplat":
-            torch = self.backend.torch
-            rgb, depth = self.backend.render_rgbd(viewmat, fx, fy, cx, cy, w, h, as_numpy=False)
-            bim_rgb, bim_depth = self.bim.render_torch(torch, rgb.device, viewmat, fx, fy, cx, cy, w, h)
+        if bim is not None and mode != "splat" and backend.name == "gsplat":
+            torch = backend.torch
+            rgb, depth = backend.render_rgbd(viewmat, fx, fy, cx, cy, w, h, as_numpy=False)
+            bim_rgb, bim_depth = bim.render_torch(torch, rgb.device, viewmat, fx, fy, cx, cy, w, h)
             front = bim_depth < depth  # BIM surface nearer than the scan: it wins
             alpha = front.float() * 0.92
             if mode == "xray":  # also ghost the BIM parts the scan hides
                 alpha = torch.where(torch.isfinite(bim_depth) & ~front, torch.full_like(alpha, 0.35), alpha)
             out = rgb * (1 - alpha[..., None]) + bim_rgb * alpha[..., None]
             img = (out.clamp(0, 1) * 255).to(torch.uint8).cpu().numpy()
-        elif self.bim is not None and mode != "splat":
-            rgb, depth = self.backend.render_rgbd(viewmat, fx, fy, cx, cy, w, h)
-            bim_rgb, bim_depth = self.bim.render(viewmat, fx, fy, cx, cy, w, h)
+        elif bim is not None and mode != "splat":
+            rgb, depth = backend.render_rgbd(viewmat, fx, fy, cx, cy, w, h)
+            bim_rgb, bim_depth = bim.render(viewmat, fx, fy, cx, cy, w, h)
             front = bim_depth < depth  # BIM surface nearer than the scan: it wins
             alpha = np.where(front, 0.92, 0.0)
             if mode == "xray":  # also ghost the BIM parts the scan hides
                 alpha = np.where(np.isfinite(bim_depth) & ~front, 0.35, alpha)
             img = ((rgb * (1 - alpha[..., None]) + bim_rgb * alpha[..., None]) * 255).astype(np.uint8)
         else:
-            img = self.backend.render(viewmat, fx, fy, cx, cy, w, h)
+            img = backend.render(viewmat, fx, fy, cx, cy, w, h)
         jpeg = encode_jpeg(img, quality)
         dt = time.perf_counter() - t0
         now = time.time()
@@ -588,7 +609,8 @@ class RenderService:
 
     async def health(self, request):
         return web.json_response({"ok": True, "backend": self.backend.name, "clients": self.clients,
-                                  "numGaussians": self.backend.num_gaussians, "frames": self.frames,
+                                  "numGaussians": self.backend.num_gaussians, "scenes": len(self.scenes),
+                                  "frames": self.frames,
                                   "fps": round(self.fps, 1), "renderMs": round(self.render_ms, 1)})
 
     async def page(self, request):
@@ -609,7 +631,9 @@ class RenderService:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--ply", help="3DGS point_cloud.ply (required for the gsplat backend)")
+    ap.add_argument("--ply", action="append", default=[],
+                    help="3DGS point_cloud.ply, repeat for several scenes the viewer can switch between; "
+                         "'name=path' sets the scene's display name")
     ap.add_argument("--backend", choices=["gsplat", "fake"], default="gsplat")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8765)
@@ -647,14 +671,20 @@ def main():
     background = [float(x) for x in args.background.split(",")]
     prefix = "/" + args.prefix.strip("/") + "/" if args.prefix.strip("/") else "/"
 
+    specs = []
+    for item in args.ply:
+        name, sep, path = item.partition("=")
+        specs.append((name, path) if sep and "/" not in name else (scene_name(item), item))
     if args.backend == "fake":
-        backend = FakeBackend(background)
+        # --ply values only name the test-pattern scenes (tinted per scene)
+        scenes = [(n, FakeBackend(background, tint=i)) for i, (n, _p) in enumerate(specs)] \
+            or [("test pattern", FakeBackend(background))]
     else:
-        if not args.ply:
+        if not specs:
             sys.exit("--ply is required for the gsplat backend")
-        backend = GsplatBackend(args.ply, background, clean=args.clean)
+        scenes = [(n, GsplatBackend(path, background, clean=args.clean)) for n, path in specs]
 
-    service = RenderService(backend, args)
+    service = RenderService(scenes, args)
     service.warm_up()
     app = web.Application()
     app.router.add_get(prefix, service.page)
@@ -667,7 +697,8 @@ def main():
         app["watchdog"] = asyncio.create_task(service.idle_watchdog())
 
     app.on_startup.append(start_watchdog)
-    print(f"[render] {backend.name} backend listening on {args.host}:{args.port}{prefix}", flush=True)
+    print(f"[render] {service.backend.name} backend, {len(service.scenes)} scene(s), listening on "
+          f"{args.host}:{args.port}{prefix}", flush=True)
     web.run_app(app, host=args.host, port=args.port, print=None, access_log=None)
 
 

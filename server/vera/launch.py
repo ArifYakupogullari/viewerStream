@@ -134,8 +134,15 @@ class Session:
 def start(ply=None, backend="gsplat", sif=DEFAULT_SIF, venv=DEFAULT_VENV, idle_timeout=1800,
           extra_args=(), wait=900):
     """Launch the renderer in the background and wait until it answers /health."""
-    if backend == "gsplat" and not (ply and Path(ply).is_file()):
-        raise FileNotFoundError(f"PLY not found: {ply!r} (pass ply=..., or backend='fake' for a test pattern)")
+    # one path, or several (the viewer can switch between them); "name=path" names a scene
+    plies = [ply] if isinstance(ply, str) else list(ply or [])
+    for item in plies:
+        name, sep, path = item.partition("=")
+        path = path if sep and "/" not in name else item
+        if backend == "gsplat" and not Path(path).is_file():
+            raise FileNotFoundError(f"PLY not found: {path!r}")
+    if backend == "gsplat" and not plies:
+        raise FileNotFoundError("no PLY given (pass ply=..., or backend='fake' for a test pattern)")
     if not Path(sif).is_file():
         raise FileNotFoundError(f"container not found: {sif} (set VIEWERSTREAM_SIF)")
     # lexists: bin/python links to the container's interpreter, absent on the host
@@ -151,8 +158,8 @@ def start(ply=None, backend="gsplat", sif=DEFAULT_SIF, venv=DEFAULT_VENV, idle_t
            f"{venv}/bin/python", str(REPO / "server" / "render_server.py"),
            "--backend", backend, "--port", str(port), "--idle-timeout", str(idle_timeout),
            "--prefix", f"/node/{host}/{port}/", *extra_args]
-    if ply:
-        cmd += ["--ply", str(ply)]
+    for item in plies:
+        cmd += ["--ply", str(item)]
     # the secret goes through the environment, not argv (argv is visible in ps);
     # gsplat's JIT build/load needs the venv's ninja on PATH, and the same arch
     # list setup_env.sh compiled with so the cached kernels are reused
@@ -179,7 +186,7 @@ def start(ply=None, backend="gsplat", sif=DEFAULT_SIF, venv=DEFAULT_VENV, idle_t
 
 def main():
     ap = argparse.ArgumentParser(description="Run the viewerStream renderer in the foreground (batch jobs).")
-    ap.add_argument("--ply")
+    ap.add_argument("--ply", action="append", default=[], help="repeat for several switchable scenes; name=path to name one")
     ap.add_argument("--backend", choices=["gsplat", "fake"], default="gsplat")
     ap.add_argument("--idle-timeout", type=int, default=1800)
     ap.add_argument("--bim-demo", action="store_true", help="merged BIM + splat proof of concept")
