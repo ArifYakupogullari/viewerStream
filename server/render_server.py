@@ -328,7 +328,7 @@ class BimDemo:
     combined image (no lag between layers). Real IFC geometry + a splat->BIM
     alignment would replace the boxes."""
 
-    MODES = ("merged", "xray", "splat")
+    MODES = ("splat", "merged", "xray")  # starts on the plain scan; M cycles
 
     def __init__(self, backend):
         cam = backend.default_camera
