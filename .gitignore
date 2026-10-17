@@ -4,3 +4,4 @@ public/test-scenes/
 .DS_Store
 *.log
 __pycache__/
+public/sbmock-data/

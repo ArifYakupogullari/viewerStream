@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StreamBIM imitation (viewerStream dev)</title>
+    <link rel="stylesheet" href="/src/host/sbmock/sbmock.css" />
+  </head>
+  <!-- Mirrors app.streambim.com's viewer DOM where widgets see it: #scene (3D canvas, z 0),
+       #slider-group--left (left panels + the widget iframe), right tabs, toolbars.
+       Dev server only (npm run dev -> /host/streambim/); model data is local (public/sbmock-data/). -->
+  <body class="ember-application">
+    <div class="scene-backdrop"></div>
+    <div class="flex absolute width-100 height-100">
+      <div id="scene" class="scene ui-widget-content"></div>
+    </div>
+
+    <div id="slider-group--left" class="slider-group flex row-reverse">
+      <div id="models" class="slider slider--models slider--left slider--inactive">
+        <button class="tab left tab--models" data-slider="models" title="Models"><span class="tab-icon">▤</span></button>
+        <div class="slider-content">
+          <h2>Models</h2>
+          <div id="layerList"></div>
+          <h3>Navigation</h3>
+          <label><input type="radio" name="nav" value="0" checked /> Person</label>
+          <label><input type="radio" name="nav" value="1" /> Spin</label>
+        </div>
+      </div>
+      <div id="objectinfo" class="slider slider--objectinfo slider--left slider--inactive">
+        <button class="tab left tab--objectinfo" data-slider="objectinfo" title="Object information"><span class="tab-icon">i</span></button>
+        <div class="slider-content">
+          <h2 id="oiTitle">Object information</h2>
+          <table id="oiTable"></table>
+          <div class="row">
+            <button id="oiHide">Hide</button>
+            <button id="oiSelectParts" title="Select the assembly's parts like a second click">Parts…</button>
+          </div>
+          <ul id="oiParts"></ul>
+        </div>
+      </div>
+      <div id="search" class="slider slider--search slider--left slider--inactive">
+        <button class="tab left tab--search" data-slider="search" title="Search"><span class="tab-icon">⌕</span></button>
+        <div class="slider-content">
+          <h2>Search</h2>
+          <label>Property
+            <select id="sProp">
+              <option value="@kind">IFC Type (@kind)</option>
+              <option>Name</option><option>ObjectType</option><option>Material</option>
+              <option>Floor</option><option>Layer</option><option>Assembly</option><option>Tag</option>
+            </select>
+          </label>
+          <label>Operator
+            <select id="sOp"><option value="=">equals (* wildcard)</option><option value="~">contains</option><option value="!=">not equal</option></select>
+          </label>
+          <label>Value <input id="sVal" list="sValues" placeholder="e.g. IfcColumn" /></label>
+          <datalist id="sValues"></datalist>
+          <div class="row"><button id="sGo">Search</button><button id="sReset">Reset</button></div>
+          <div id="sCount" class="hint"></div>
+          <h3>Others</h3>
+          <label><input type="radio" name="smode" value="FADED" checked /> Faded</label>
+          <label><input type="radio" name="smode" value="HIDDEN" /> Hidden</label>
+          <label><input type="radio" name="smode" value="ORIGINAL" /> Original</label>
+          <h3>Colour coding</h3>
+          <div class="row"><button id="ccKind">By IFC type</button><button id="ccLayer">By layer</button><button id="ccOff">Off</button></div>
+          <div id="ccLegend"></div>
+        </div>
+      </div>
+      <div id="widgets" class="slider slider--widgets slider--left slider--inactive">
+        <button class="tab left tab--widgets" data-slider="widgets" title="Widget"><span class="tab-icon">◧</span></button>
+        <div class="widget-header">
+          <span id="widgetTitle">viewerStream</span>
+          <span class="spacer"></span>
+          <button id="widgetExpand" title="Expand">⤢</button>
+          <button id="widgetClose" title="Close">✕</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="hiddenobjects" class="slider slider--right slider--inactive">
+      <button class="tab right tab--hiddenobjects" title="Hidden objects"><span class="tab-icon">◌</span></button>
+      <div class="slider-content">
+        <h2>Hidden objects</h2>
+        <button id="hShowAll">Show all</button>
+        <ul id="hList"></ul>
+      </div>
+    </div>
+
+    <div class="mock-toolbar">
+      <button id="homeBtn" title="Home">⌂</button>
+      <span id="status"></span>
+      <label class="mock-url">widget <input id="widgetUrl" value="../../?debug=1" /></label>
+    </div>
+    <div id="mockLog" class="mock-log"></div>
+
+    <script type="module" src="/src/host/sbmock/main.js"></script>
+  </body>
+</html>
