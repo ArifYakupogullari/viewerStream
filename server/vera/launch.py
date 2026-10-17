@@ -190,11 +190,21 @@ def main():
     ap.add_argument("--backend", choices=["gsplat", "fake"], default="gsplat")
     ap.add_argument("--idle-timeout", type=int, default=1800)
     ap.add_argument("--bim-demo", action="store_true", help="merged BIM + splat proof of concept")
+    ap.add_argument("--bim-ply", help="real BIM layer (gaussian PLY of IFC surfels, same frame as the scenes)")
+    ap.add_argument("--bim-mesh", help="real BIM layer as triangles (.npz from bim_surfels.py --mesh-out), crisper")
+    ap.add_argument("--bim-zclip", type=float, nargs=2, help="storey cut for --bim-mesh: scene-frame z range")
+    ap.add_argument("--bim-status", help="verification result per element (json): status view + click-to-inspect")
+    ap.add_argument("--evidence-dir", help="folder of the evidence crops named in --bim-status")
     ap.add_argument("--clean", choices=["light", "medium", "strong"], help="drop floaters/needles at load")
     ap.add_argument("--foreground", action="store_true", help="block until the renderer exits")
     a = ap.parse_args()
     session = start(ply=a.ply, backend=a.backend, idle_timeout=a.idle_timeout,
-                    extra_args=(("--bim-demo",) if a.bim_demo else ()) + (("--clean", a.clean) if a.clean else ()))
+                    extra_args=(("--bim-demo",) if a.bim_demo else ()) + (("--clean", a.clean) if a.clean else ())
+                    + (("--bim-ply", a.bim_ply) if a.bim_ply else ())
+                    + (("--bim-mesh", a.bim_mesh) if a.bim_mesh else ())
+                    + (("--bim-zclip", *map(str, a.bim_zclip)) if a.bim_zclip else ())
+                    + (("--bim-status", a.bim_status) if a.bim_status else ())
+                    + (("--evidence-dir", a.evidence_dir) if a.evidence_dir else ()))
     # The link carries the session secret: keep it out of the (possibly
     # group-readable) Slurm .out file and in a user-only file instead.
     link_file = LOG_DIR / f"session-{session.host}-{session.port}.txt"

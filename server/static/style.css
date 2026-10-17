@@ -111,3 +111,29 @@ body.relay .hint {
 #scene.hidden {
   display: none;
 }
+
+/* verification: legend and inspection panel */
+#legend {
+  position: fixed; z-index: 2; bottom: calc(40px + env(safe-area-inset-bottom)); left: 8px;
+  background: rgba(0, 0, 0, 0.6); border-radius: 6px; padding: 5px 9px; font-size: 12px; pointer-events: none;
+}
+#legend .sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin: 0 4px -1px 8px; }
+#legend .sw:first-child { margin-left: 0; }
+.s-built { background: #33cc4d; } .s-not-built { background: #eb3333; }
+.s-cannot-tell { background: #ffb300; } .s-no-view { background: #8c8c9e; }
+#inspect {
+  position: fixed; z-index: 3; top: calc(40px + env(safe-area-inset-top)); right: 8px; bottom: 44px;
+  width: min(380px, calc(100% - 16px)); overflow-y: auto; background: rgba(18, 18, 22, 0.92);
+  border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.4; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+}
+#inspect.hidden, #legend.hidden { display: none; }
+#inspect h3 { margin: 6px 0 4px; font-size: 14px; }
+#inspect .meta { color: #aaa; font-size: 11.5px; margin-bottom: 6px; }
+#inspect code { font-size: 11px; color: #ccc; }
+#inspect .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; color: #111; font-weight: 600; }
+#inspect .badge span { font-weight: 400; margin-left: 6px; }
+#inspect .law { color: #ffcf66; }
+#inspect .pv { margin: 4px 0; color: #ddd; }
+#inspect .ev img { width: 100%; border-radius: 4px; margin-top: 6px; display: block; }
+#inspect .close { position: absolute; top: 6px; right: 8px; background: none; border: 0; color: #ccc;
+  font-size: 20px; cursor: pointer; }

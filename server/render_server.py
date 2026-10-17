@@ -159,11 +159,25 @@ def default_camera_from_cameras_json(ply_path):
         pos = np.asarray(cam["position"], float)
         rot = np.asarray(cam["rotation"], float)  # camera-to-world; columns = OpenCV axes
         forward, up = rot[:, 2], -rot[:, 1]
+        if "up" in cam:  # optional world up, for a camera that looks down at the scene
+            up = np.asarray(cam["up"], float)
         fov_y = math.degrees(2 * math.atan(cam["height"] / (2 * cam["fy"])))
         return {"position": pos.tolist(), "target": (pos + forward).tolist(),
                 "up": up.tolist(), "fovY": fov_y}
     except Exception as e:  # malformed file: fall back to bounds-based default
         print(f"[render] ignoring {cams_path}: {e}", flush=True)
+        return None
+
+
+def ifc_offset_from_transform_json(ply_path):
+    """IFC offset of a splat trained in a local IFC frame: model_dir/transform.json
+    {"offset": [x, y, z]} with X_ifc = X_local + offset (Kaj16: ifc_apply.py). The widget
+    uses it to bring StreamBIM's camera (IFC world, y down) into the splat's frame."""
+    path = Path(ply_path).resolve().parent.parent.parent / "transform.json"
+    try:
+        off = json.loads(path.read_text()).get("offset")
+        return [float(x) for x in off] if off and len(off) == 3 else None
+    except (OSError, ValueError, TypeError):
         return None
 
 
@@ -223,6 +237,7 @@ class GsplatBackend:
         lo, hi = np.percentile(means, [2, 98], axis=0)
         self.bounds = [lo.tolist(), hi.tolist()]
         self.default_camera = default_camera_from_cameras_json(ply_path) or self._bounds_camera(lo, hi)
+        self.ifc_offset = ifc_offset_from_transform_json(ply_path)
         print(f"[render] loaded {n:,} gaussians (sh_degree {self.sh_degree}) from {ply_path} "
               f"in {time.time() - t0:.1f}s; GPU {torch.cuda.get_device_name(0)}", flush=True)
 
@@ -415,6 +430,176 @@ class BimDemo:
         return color, depth
 
 
+class BimSplat:
+    """Real BIM layer: IFC elements sampled into flat, opaque surfels (a gaussian
+    PLY in the same frame as the scan, made by Kaj16's bim_surfels.py), rendered
+    with gsplat for colour + depth and depth-merged with the scan like BimDemo.
+    The frame is metric, so BIM within `tol` of the scanned surface counts as
+    coincident (built as designed) and is tinted rather than z-fighting."""
+
+    MODES = ("splat", "merged", "xray", "bim")
+    tol = 0.12  # metres
+
+    def __init__(self, ply_path):
+        self.layer = GsplatBackend(ply_path, background=(0.0, 0.0, 0.0))
+
+    def render_torch(self, torch, dev, viewmat_cv, fx, fy, cx, cy, width, height):
+        L = self.layer
+        with torch.no_grad():
+            viewmats = torch.tensor(viewmat_cv, dtype=torch.float32, device=dev)[None]
+            ks = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=torch.float32, device=dev)[None]
+            out, alphas, _ = L.rasterization(
+                L.means, L.quats, L.scales, L.opacities, L.sh, viewmats, ks, width, height,
+                sh_degree=L.sh_degree, near_plane=0.01, far_plane=1e6, render_mode="RGB+ED")
+            a = alphas[0, ..., 0]
+            rgb = (out[0, ..., :3] / a.clamp(min=1e-4)[..., None]).clamp(0, 1)  # un-premultiply
+            depth = torch.where(a > 0.5, out[0, ..., 3], torch.full_like(a, float("inf")))
+            return rgb, depth
+
+
+def raster_triangles(torch, tris_cam, width, height, fx, fy, cx, cy, near=0.05, chunk=25_000_000):
+    """Exact z-buffer of camera-space triangles (OpenCV axes: x right, y down, z forward) for
+    a pinhole camera - the same camera model gsplat uses for the scan, so the two images share
+    one pixel grid. Pure torch (no extra packages): every triangle's bounding-box pixels are
+    tested with barycentrics, perspective-correct depth, and the nearest (depth, triangle) per
+    pixel is kept with one int64 scatter-min. Returns view-space z (inf = empty) and triangle
+    index (-1) per pixel."""
+    dev = tris_cam.device
+    W, H = width, height
+    z = tris_cam[..., 2]
+    ok = (z > near).all(1)
+    idx_all = torch.nonzero(ok).squeeze(1)
+    t = tris_cam[ok]
+    u = fx * t[..., 0] / t[..., 2] + cx
+    v = fy * t[..., 1] / t[..., 2] + cy
+    x0 = torch.ceil(u.min(1).values - 0.5).clamp(0, W - 1).long()
+    x1 = torch.floor(u.max(1).values - 0.5).clamp(0, W - 1).long()
+    y0 = torch.ceil(v.min(1).values - 0.5).clamp(0, H - 1).long()
+    y1 = torch.floor(v.max(1).values - 0.5).clamp(0, H - 1).long()
+    a2 = (u[:, 1] - u[:, 0]) * (v[:, 2] - v[:, 0]) - (u[:, 2] - u[:, 0]) * (v[:, 1] - v[:, 0])
+    vis = ((u.max(1).values >= 0) & (u.min(1).values < W) & (v.max(1).values >= 0) & (v.min(1).values < H)
+           & (x1 >= x0) & (y1 >= y0) & (a2.abs() > 1e-9))
+    sel = torch.nonzero(vis).squeeze(1)
+    u, v, t, x0, x1, y0, y1, a2, idx_all = u[sel], v[sel], t[sel], x0[sel], x1[sel], y0[sel], y1[sel], a2[sel], idx_all[sel]
+    w = x1 - x0 + 1
+    area = w * (y1 - y0 + 1)
+    empty = torch.iinfo(torch.int64).max
+    key = torch.full((W * H,), empty, dtype=torch.int64, device=dev)
+    csum = torch.cumsum(area, 0)
+    start, n_tri = 0, len(area)
+    while start < n_tri:
+        base = int(csum[start - 1]) if start else 0
+        end = max(int(torch.searchsorted(csum, torch.tensor(base + chunk, device=dev), right=True)), start + 1)
+        ar = area[start:end]
+        n = int(ar.sum())
+        ti = torch.repeat_interleave(torch.arange(end - start, device=dev), ar)
+        loc = torch.arange(n, device=dev) - (torch.cumsum(ar, 0) - ar)[ti]
+        ww = w[start:end][ti]
+        px = x0[start:end][ti] + loc % ww
+        py = y0[start:end][ti] + torch.div(loc, ww, rounding_mode="floor")
+        pcx, pcy = px.float() + 0.5, py.float() + 0.5
+        U, V, Z, A = u[start:end][ti], v[start:end][ti], t[start:end][ti][..., 2], a2[start:end][ti]
+        b0 = ((U[:, 1] - pcx) * (V[:, 2] - pcy) - (U[:, 2] - pcx) * (V[:, 1] - pcy)) / A
+        b1 = ((U[:, 2] - pcx) * (V[:, 0] - pcy) - (U[:, 0] - pcx) * (V[:, 2] - pcy)) / A
+        b2 = 1 - b0 - b1
+        zp = 1.0 / (b0 / Z[:, 0] + b1 / Z[:, 1] + b2 / Z[:, 2])
+        m = (b0 >= -1e-6) & (b1 >= -1e-6) & (b2 >= -1e-6) & (zp > near)
+        k = ((zp[m] * 1e4).long().clamp(max=(1 << 31) - 1) << 31) | idx_all[start:end][ti][m]
+        key.scatter_reduce_(0, (py * W + px)[m], k, reduce="amin")
+        start = end
+    filled = key != empty
+    depth = torch.full((W * H,), float("inf"), device=dev)
+    tri = torch.full((W * H,), -1, dtype=torch.int64, device=dev)
+    depth[filled] = (key[filled] >> 31).float() / 1e4
+    tri[filled] = key[filled] & ((1 << 31) - 1)
+    return depth.view(H, W), tri.view(H, W)
+
+
+class BimMesh:
+    """Real BIM layer as triangles (Kaj16 bim_surfels.py --mesh-out .npz, in the scenes'
+    frame), rasterised with the scan's exact camera: the merge with the splat is a per-pixel
+    depth comparison in screen space, with crisp edges and solid thin pipes (no surfels).
+    Same interface as BimSplat, plus per pixel: `last_weight` (an element group's blend
+    weight, e.g. concrete lighter so the scanned ceiling stays readable) and `last_elem`
+    (element index; npz `guids` / `keys` name it). `zclip` cuts the storey per pixel."""
+
+    MODES = ("splat", "merged", "xray", "bim")
+    tol = 0.12  # metres
+    LIGHT = np.array([0.35, 0.25, 0.9]) / np.linalg.norm([0.35, 0.25, 0.9])  # as the surfels
+
+    STATUS_COLORS = {"built": (0.20, 0.80, 0.30), "not built": (0.92, 0.20, 0.20), "cannot tell": (1.00, 0.70, 0.00),
+                     "no view": (0.55, 0.55, 0.62)}
+
+    def __init__(self, npz_path, zclip=None, weights=None, status=None):
+        import torch
+        d = np.load(npz_path)
+        tris = d["tris"].astype(np.float32)
+        n = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+        n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+        shade = 0.55 + 0.45 * np.abs(n @ self.LIGHT)
+        dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        self.keys, self.guids = d["keys"], d["guids"]
+        weights = weights or {}
+        ew = np.array([next((v for k, v in weights.items() if k in str(key)), 1.0) for key in self.keys], np.float32)
+        elem = d["elem"].astype(np.int64)
+        self.tris = torch.from_numpy(tris).to(dev)
+        self.rgb = torch.from_numpy((d["color"] / 255.0 * shade[:, None]).astype(np.float32)).to(dev)
+        self.elem = torch.from_numpy(elem).to(dev)
+        self.weight = torch.from_numpy(ew[elem]).to(dev)
+        self.zclip = zclip
+        self.last_weight = self.last_elem = None
+        self.rgb_status = self.weight_status = None
+        if status:  # verification result per element (GUID): built / not built / cannot tell / no view
+            st = [(status.get(str(g)) or {}).get("status", "no view") for g in self.guids]
+            pal = self.STATUS_COLORS
+            ec = np.array([pal.get(x, pal["no view"]) for x in st], np.float32)
+            ws = np.array([0.15 if x == "no view" else 1.0 for x in st], np.float32)
+            self.rgb_status = torch.from_numpy((ec[elem] * shade[:, None]).astype(np.float32)).to(dev)
+            self.weight_status = torch.from_numpy(ws[elem]).to(dev)
+            from collections import Counter
+            print(f"[render] BIM status colours: {dict(Counter(st))}", flush=True)
+        print(f"[render] BIM mesh: {len(tris):,} triangles of {len(self.keys)} elements from {npz_path}", flush=True)
+
+    def render_torch(self, torch, dev, viewmat_cv, fx, fy, cx, cy, width, height, colors="model"):
+        use_status = colors == "status" and self.rgb_status is not None
+        with torch.no_grad():
+            Vm = torch.as_tensor(np.asarray(viewmat_cv), dtype=torch.float32, device=self.tris.device)
+            tc = self.tris @ Vm[:3, :3].T + Vm[:3, 3]
+            depth, tri = raster_triangles(torch, tc, width, height, fx, fy, cx, cy)
+            has = tri >= 0
+            if self.zclip is not None and has.any():
+                # cut the storey exactly: world z of every BIM pixel
+                ys, xs = torch.nonzero(has, as_tuple=True)
+                zc = depth[ys, xs]
+                pc = torch.stack([(xs.float() + 0.5 - cx) / fx * zc, (ys.float() + 0.5 - cy) / fy * zc, zc], 1)
+                wz = ((pc - Vm[:3, 3]) @ Vm[:3, :3])[:, 2]
+                out = (wz < self.zclip[0] - 0.02) | (wz > self.zclip[1] + 0.02)
+                depth[ys[out], xs[out]] = float("inf")
+                tri[ys[out], xs[out]] = -1
+                has = tri >= 0
+            rgb = torch.zeros(height, width, 3, device=self.tris.device)
+            rgb[has] = (self.rgb_status if use_status else self.rgb)[tri[has]]
+            self.last_weight = torch.ones(height, width, device=self.tris.device)
+            self.last_weight[has] = (self.weight_status if use_status else self.weight)[tri[has]]
+            self.last_elem = torch.full((height, width), -1, dtype=torch.int64, device=self.tris.device)
+            self.last_elem[has] = self.elem[tri[has]]
+            return rgb.to(dev), depth.to(dev)
+
+    def pick(self, torch, viewmat_cv, fx, fy, cx, cy, width, height, x, y, r=6):
+        """element index under pixel (x, y), or the nearest within r pixels (thin pipes); -1 if none."""
+        self.render_torch(torch, self.tris.device, viewmat_cv, fx, fy, cx, cy, width, height)
+        el = self.last_elem
+        x, y = int(round(x)), int(round(y))
+        y0, y1, x0, x1 = max(0, y - r), min(height, y + r + 1), max(0, x - r), min(width, x + r + 1)
+        win = el[y0:y1, x0:x1]
+        hit = win >= 0
+        if not bool(hit.any()):
+            return -1
+        ys, xs = torch.nonzero(hit, as_tuple=True)
+        k = int(torch.argmin((ys + y0 - y) ** 2 + (xs + x0 - x) ** 2))
+        return int(win[ys[k], xs[k]])
+
+
 # ---------------------------------------------------------------------------
 # JPEG
 # ---------------------------------------------------------------------------
@@ -446,7 +631,15 @@ def scene_name(ply_path):
 class RenderService:
     def __init__(self, scenes, args):
         """scenes: list of (name, backend); scene 0 is the default."""
-        self.scenes = [{"name": name, "backend": b, "bim": BimDemo(b) if args.bim_demo else None}
+        self.status = {}
+        if getattr(args, "bim_status", None):
+            self.status = json.loads(Path(args.bim_status).read_text())
+            print(f"[render] verification status for {len(self.status)} elements from {args.bim_status}", flush=True)
+        if getattr(args, "bim_mesh", None):
+            layer = BimMesh(args.bim_mesh, zclip=args.bim_zclip, weights={"concrete": 0.45}, status=self.status or None)
+        else:
+            layer = BimSplat(args.bim_ply) if getattr(args, "bim_ply", None) else None
+        self.scenes = [{"name": name, "backend": b, "bim": layer or (BimDemo(b) if args.bim_demo else None)}
                        for name, b in scenes]
         self.backend = self.scenes[0]["backend"]
         self.args = args
@@ -460,7 +653,9 @@ class RenderService:
         self.render_ms = 0.0
         self._fps_window = []
         self._render_times = deque(maxlen=30)
-        self.modes = BimDemo.MODES if args.bim_demo else ("splat",)
+        self.modes = (BimSplat.MODES if layer else BimDemo.MODES if args.bim_demo else ("splat",))
+        if self.status and isinstance(layer, BimMesh):
+            self.modes = ("status",) + tuple(self.modes)   # verification colours first
 
     def warm_up(self):
         """The first gsplat call loads the CUDA kernels (~1 s). Pay that before
@@ -480,10 +675,12 @@ class RenderService:
         return {"type": "info", "backend": self.backend.name, "numGaussians": self.backend.num_gaussians,
                 "shDegree": self.backend.sh_degree, "bounds": self.backend.bounds,
                 "defaultCamera": self.backend.default_camera, "maxSide": self.args.max_side,
+                "ifcOffset": getattr(self.backend, "ifc_offset", None),
                 "modes": list(self.modes),
                 "scenes": [{"name": sc["name"], "numGaussians": sc["backend"].num_gaussians,
                             "shDegree": sc["backend"].sh_degree, "bounds": sc["backend"].bounds,
-                            "defaultCamera": sc["backend"].default_camera} for sc in self.scenes]}
+                            "defaultCamera": sc["backend"].default_camera,
+                            "ifcOffset": getattr(sc["backend"], "ifc_offset", None)} for sc in self.scenes]}
 
     def parse_camera(self, msg):
         view = msg.get("view")
@@ -513,11 +710,22 @@ class RenderService:
         if bim is not None and mode != "splat" and backend.name == "gsplat":
             torch = backend.torch
             rgb, depth = backend.render_rgbd(viewmat, fx, fy, cx, cy, w, h, as_numpy=False)
-            bim_rgb, bim_depth = bim.render_torch(torch, rgb.device, viewmat, fx, fy, cx, cy, w, h)
-            front = bim_depth < depth  # BIM surface nearer than the scan: it wins
+            bim_rgb, bim_depth = bim.render_torch(torch, rgb.device, viewmat, fx, fy, cx, cy, w, h,
+                                                  colors="status" if mode == "status" else "model")
+            tol = getattr(bim, "tol", 0.0)
+            front = bim_depth < depth - tol  # BIM surface nearer than the scan: it wins
             alpha = front.float() * 0.92
-            if mode == "xray":  # also ghost the BIM parts the scan hides
-                alpha = torch.where(torch.isfinite(bim_depth) & ~front, torch.full_like(alpha, 0.35), alpha)
+            if tol > 0:  # on the scanned surface (built as designed): tint
+                same = torch.isfinite(bim_depth) & ((bim_depth - depth).abs() <= tol)
+                alpha = torch.where(same, torch.full_like(alpha, 0.5), alpha)
+            if mode in ("xray", "status"):  # also ghost the BIM parts the scan hides
+                hidden = torch.isfinite(bim_depth) & (bim_depth > depth + tol)
+                alpha = torch.where(hidden, torch.full_like(alpha, 0.35), alpha)
+            if mode == "bim":  # the BIM layer alone, over a dark background
+                alpha = torch.isfinite(bim_depth).float()
+                rgb = torch.full_like(rgb, 0.08)
+            elif getattr(bim, "last_weight", None) is not None:  # per element group (BimMesh)
+                alpha = alpha * bim.last_weight.to(alpha.device)
             out = rgb * (1 - alpha[..., None]) + bim_rgb * alpha[..., None]
             img = (out.clamp(0, 1) * 255).to(torch.uint8).cpu().numpy()
         elif bim is not None and mode != "splat":
@@ -539,6 +747,20 @@ class RenderService:
         self._fps_window = [t for t in self._fps_window if now - t < 2.0] + [now]
         self.fps = len(self._fps_window) / 2.0
         return jpeg
+
+    def pick(self, cam, x, y):
+        """the BIM element under normalised canvas position (x, y) and its verification record"""
+        viewmat, fx, fy, cx, cy, w, h, _q, _mode, scene = cam
+        bim, backend = self.scenes[scene]["bim"], self.scenes[scene]["backend"]
+        if not isinstance(bim, BimMesh) or backend.name != "gsplat":
+            return {"type": "pick", "found": False, "message": "no BIM mesh layer"}
+        e = bim.pick(backend.torch, viewmat, fx, fy, cx, cy, w, h, x * w, y * h)
+        if e < 0:
+            return {"type": "pick", "found": False}
+        g = str(bim.guids[e])
+        rec = dict(self.status.get(g) or {"status": "no view"})
+        rec["evidence"] = ["evidence/" + Path(v).name for v in rec.get("views", [])]
+        return {"type": "pick", "found": True, "elem": e, "guid": g, "key": str(bim.keys[e]), **rec}
 
     def origin_ok(self, origin):
         if origin in self.args.allowed_origin:
@@ -580,6 +802,10 @@ class RenderService:
                     if data.get("type") == "camera":
                         latest["cam"] = (int(data.get("seq", 0)) & 0xFFFFFFFF, self.parse_camera(data))
                         wake.set()
+                    elif data.get("type") == "pick":
+                        res = await asyncio.get_running_loop().run_in_executor(
+                            self.pool, self.pick, self.parse_camera(data), float(data.get("x", 0)), float(data.get("y", 0)))
+                        await ws.send_json(res)
                 except (ValueError, TypeError, KeyError) as e:
                     await ws.send_json({"type": "error", "message": str(e)})
             wake.set()
@@ -654,6 +880,14 @@ def main():
     ap.add_argument("--background", default="0,0,0", help="r,g,b in 0..1")
     ap.add_argument("--clean", choices=sorted(CLEAN_PRESETS),
                     help="drop floaters / needles / outliers at load (see CLEAN_PRESETS)")
+    ap.add_argument("--bim-mesh", help="real BIM layer as triangles (bim_surfels.py --mesh-out .npz, scenes' frame); "
+                    "rasterised with the scan's camera and merged per pixel - crisper than --bim-ply")
+    ap.add_argument("--bim-zclip", type=float, nargs=2, help="keep BIM pixels with scene-frame z in this range (storey cut)")
+    ap.add_argument("--bim-status", help="verification result per element (json {guid: {status, ...}}): adds the 'status' "
+                    "view (built / not built / cannot tell / no view) and click-to-inspect")
+    ap.add_argument("--evidence-dir", help="folder of the evidence crops named in --bim-status, served under evidence/")
+    ap.add_argument("--bim-ply", help="real BIM layer: gaussian PLY of IFC surfels in the scenes' frame "
+                    "(merged / xray / bim modes)")
     ap.add_argument("--bim-demo", action="store_true",
                     help="proof of concept: depth-merge a few BIM-like boxes into the stream (M cycles modes)")
     args = ap.parse_args()
@@ -692,6 +926,8 @@ def main():
     app.router.add_get(prefix + "health", service.health)
     app.router.add_get(prefix + "ws", service.ws_handler)
     app.router.add_static(prefix + "static/", STATIC_DIR)
+    if args.evidence_dir:
+        app.router.add_static(prefix + "evidence/", args.evidence_dir)
 
     async def start_watchdog(app):
         app["watchdog"] = asyncio.create_task(service.idle_watchdog())

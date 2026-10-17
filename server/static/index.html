@@ -13,8 +13,13 @@
     <select id="scene" class="hidden" title="Scene (N: next)"></select>
     <div id="help">
       Drag: look around · Wheel / pinch: move · Right-drag / two fingers: pan ·
-      WASD + QE: move · Shift: faster · R: reset view · N: next scene
+      WASD + QE: move · Shift: faster · R: reset view · N: next scene · M: switch view · Click: inspect element
     </div>
+    <div id="legend" class="hidden">
+      <span class="sw s-built"></span>built <span class="sw s-not-built"></span>not built
+      <span class="sw s-cannot-tell"></span>can't tell <span class="sw s-no-view"></span>no usable view
+    </div>
+    <aside id="inspect" class="hidden"></aside>
     <!-- relative paths: the Vera portal serves this under /node/<host>/<port>/ -->
     <script type="module" src="static/viewer.js"></script>
   </body>

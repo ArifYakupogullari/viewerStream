@@ -8,6 +8,8 @@ const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
 const hudEl = document.getElementById('hud');
 const sceneEl = document.getElementById('scene');
+const inspectEl = document.getElementById('inspect');
+const legendEl = document.getElementById('legend');
 
 const secret =
   new URLSearchParams(location.search).get('s') || new URLSearchParams(location.hash.slice(1)).get('s');
@@ -85,14 +87,18 @@ const pointers = new Map();
 let pinchDist = null;
 
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+let press = null; // a click (no drag) inspects the BIM element under the cursor
 canvas.addEventListener('pointerdown', (e) => {
   canvas.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, button: e.button });
+  press = pointers.size === 1 && e.button === 0 ? { x: e.clientX, y: e.clientY, t: performance.now() } : null;
   pinchDist = null;
 });
 canvas.addEventListener('pointerup', (e) => {
   pointers.delete(e.pointerId);
   pinchDist = null;
+  if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5 && performance.now() - press.t < 500) pick(e);
+  press = null;
 });
 canvas.addEventListener('pointercancel', (e) => {
   pointers.delete(e.pointerId);
@@ -133,7 +139,9 @@ window.addEventListener('keydown', (e) => {
   if ((e.key === 'm' || e.key === 'M') && modes.length > 1) {
     mode = modes[(modes.indexOf(mode) + 1) % modes.length];
     setStatus(`${statusBase} · ${mode}`);
+    updateLegend();
   }
+  if (e.key === 'Escape') inspectEl.classList.add('hidden');
   keys.add(e.key.toLowerCase());
 });
 window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
@@ -182,6 +190,42 @@ const loop = createFrameLoop({
   },
 });
 
+// --- inspection: click an element, see its verification and evidence ----------
+function pick(e) {
+  const view = getView();
+  if (!view || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const r = canvas.getBoundingClientRect();
+  ws.send(JSON.stringify({ type: 'pick', ...view, x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height }));
+}
+
+const esc = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const LABEL = { built: 'built', 'not built': 'not built', 'cannot tell': "can't tell", 'no view': 'no usable view' };
+
+function showInspect(m) {
+  if (!m.found) {
+    inspectEl.innerHTML = `<button class="close" title="Close (Esc)">×</button><p>${esc(m.message || 'No BIM element here.')}</p>`;
+  } else {
+    const views = (m.per_view && typeof m.per_view === 'object') ? Object.entries(m.per_view) : [];
+    inspectEl.innerHTML = `<button class="close" title="Close (Esc)">×</button>
+      <div class="badge s-${esc((m.status || 'no view').replace(' ', '-'))}">${esc(LABEL[m.status] || m.status)}
+        ${m.confidence != null ? `<span>conf ${esc(m.confidence)}</span>` : ''}</div>
+      <h3>${esc(m.type || m.key)}</h3>
+      <div class="meta">${esc(m.file || m.key)} · ${esc(m.class || '')} · MMI in model ${esc(m.mmi_model ?? '–')}
+        ${m.mmi_proposed ? ` → proposed ${esc(m.mmi_proposed)}` : ''}<br><code>${esc(m.guid)}</code></div>
+      ${m.law ? `<p class="law">rule: ${esc(m.law)}</p>` : ''}
+      ${m.what_is_there ? `<p><b>What is there:</b> ${esc(m.what_is_there)}</p>` : ''}
+      ${m.evidence_text ? `<p>${esc(m.evidence_text)}</p>` : ''}
+      ${views.map(([k, v]) => `<p class="pv"><b>${esc(k)}</b> ${esc(v)}</p>`).join('')}
+      <div class="ev">${(m.evidence || []).map((u) => `<a href="${esc(u)}" target="_blank"><img src="${esc(u)}" loading="lazy"></a>`).join('')}</div>`;
+  }
+  inspectEl.classList.remove('hidden');
+  inspectEl.querySelector('.close').onclick = () => inspectEl.classList.add('hidden');
+}
+
+function updateLegend() {
+  legendEl.classList.toggle('hidden', mode !== 'status');
+}
+
 /** Switch scene: its own start camera and step size; the frame loop picks it up. */
 function selectScene(i) {
   scene = i;
@@ -220,7 +264,8 @@ function connect() {
     if (msg.type === 'info') {
       maxSide = msg.maxSide || maxSide;
       modes = msg.modes || ['splat'];
-      mode = modes[0];
+      mode = modes[0]; // 'status' comes first when verification results are loaded
+      updateLegend();
       backendName = msg.backend;
       scenes = msg.scenes
         || [{ name: '', numGaussians: msg.numGaussians, bounds: msg.bounds, defaultCamera: msg.defaultCamera }];
@@ -229,6 +274,8 @@ function connect() {
       sceneEl.classList.toggle('hidden', scenes.length < 2);
       selectScene(0);
       loop.start();
+    } else if (msg.type === 'pick') {
+      showInspect(msg);
     } else if (msg.type === 'error') {
       setStatus(msg.message, true);
     }
