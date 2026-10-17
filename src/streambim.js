@@ -27,18 +27,18 @@ const CONNECT_TIMEOUT_MS = 5000;
  *   subsequent cameraChanged event).
  * @returns {Promise<void>} resolves once connected to StreamBIM.
  */
-export function connectStreamBIM({ onCameraState }) {
+export function connectStreamBIM({ onCameraState, onEvent = () => {} }) {
   const connected = StreamBIM.connectToParent(window.parent, {
     cameraChanged: (cameraState) => {
       debugLog('[streambim] cameraChanged', cameraState);
       onCameraState(cameraState);
     },
-    pickedObject: () => {},
-    spacesChanged: () => {},
-    floorChanged: () => {},
-    didExpand: () => {},
-    didContract: () => {},
-    beforeInit: () => {},
+    pickedObject: (result) => onEvent('pickedObject', result),
+    spacesChanged: (guids) => onEvent('spacesChanged', guids),
+    floorChanged: (floorId) => onEvent('floorChanged', floorId),
+    didExpand: () => onEvent('didExpand'),
+    didContract: () => onEvent('didContract'),
+    beforeInit: () => onEvent('beforeInit'),
   }).then(() => {
     return StreamBIM.API.getCameraState()
       .then((initialState) => {
@@ -158,6 +158,29 @@ export function fetchDocumentDownloadUrl(projectId, documentId) {
   });
 }
 
+/** StreamBIM's own field of view (scene-manager._calculateFov): vertical degrees from the
+ *  viewport aspect; StreamBIM's cameraState carries no fov. */
+export function streambimFov(aspect) {
+  return Math.min(Math.max(55, 105 / Math.pow(aspect, 1 / Math.E)), 140);
+}
+
+// StreamBIM world -> IFC world: (x, y, z)_SB = (X, -Z, Y)_IFC, so IFC = A * SB with
+// A = [[1,0,0],[0,0,1],[0,-1,0]] (y points down in StreamBIM). Verified live on
+// app.streambim.com against the Kaj16 IFC columns (2026-10-15).
+const SB_TO_IFC = new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1);
+const SB_TO_IFC_Q = new THREE.Quaternion().setFromRotationMatrix(SB_TO_IFC);
+
+/**
+ * A StreamBIM cameraState in the frame of a splat trained in a local IFC frame
+ * (X_local = X_ifc - ifcOffset, z up): {position, quaternion} for a Three.js camera.
+ */
+export function streambimToScene(state, ifcOffset) {
+  const p = new THREE.Vector3().fromArray(state.position).applyMatrix4(SB_TO_IFC)
+    .sub(new THREE.Vector3().fromArray(ifcOffset));
+  const q = SB_TO_IFC_Q.clone().multiply(new THREE.Quaternion().fromArray(state.quaternion));
+  return { position: p.toArray(), quaternion: q.toArray() };
+}
+
 /**
  * Applies a StreamBIM CameraState to a Three.js camera. The exact shape of
  * CameraState is not fully documented, so this is written defensively to
@@ -174,7 +197,20 @@ export function fetchDocumentDownloadUrl(projectId, documentId) {
  * transform - since the splat scene and the BIM model share one world
  * coordinate space.
  */
-export function applyCameraState(camera, state) {
+export function applyCameraState(camera, state, frame = null) {
+  if (frame && frame.ifcOffset && state && Array.isArray(state.position) && Array.isArray(state.quaternion)) {
+    // StreamBIM camera into the splat's local IFC frame, with StreamBIM's fov for
+    // whatever aspect the view has when it renders (camera.userData.streambimFov)
+    const s = streambimToScene(state, frame.ifcOffset);
+    camera.position.fromArray(s.position);
+    camera.quaternion.fromArray(s.quaternion);
+    camera.userData.streambimFov = true;
+    camera.fov = streambimFov(camera.aspect || 1);
+    camera.updateMatrixWorld(true);
+    camera.updateProjectionMatrix();
+    return;
+  }
+  camera.userData.streambimFov = false;
   if (!state || typeof state !== 'object') {
     console.warn('[cameraAdapter] received non-object cameraState', state);
     return;

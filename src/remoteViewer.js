@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { createFrameLoop, createStats, requestSize } from '../server/static/protocol.js';
+import { streambimFov } from './streambim.js';
 
 const HELLO_INTERVAL_MS = 500;
 
@@ -69,6 +70,7 @@ export function initRemoteViewer(container, { relay, relayOrigin, onReady, onSta
       canvas.height = h;
     }
     camera.aspect = w / h;
+    if (camera.userData.streambimFov) camera.fov = streambimFov(camera.aspect);
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld(true); // also refreshes matrixWorldInverse
     return { view: camera.matrixWorldInverse.elements, fovY: camera.fov, ...requestSize(w, h, maxSide) };

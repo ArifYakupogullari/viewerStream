@@ -9,6 +9,7 @@ import {
   getStreamBIMProjectId,
   downloadUrlCandidates,
 } from './streambim.js';
+import { createOverlayMode } from './overlay.js';
 
 const overlay = document.getElementById('overlay');
 const overlayMessage = document.getElementById('overlay-message');
@@ -21,6 +22,8 @@ const remoteConnect = document.getElementById('remote-connect');
 const remoteDisconnect = document.getElementById('remote-disconnect');
 const remoteStatus = document.getElementById('remote-status');
 const remoteStats = document.getElementById('remote-stats');
+const overlayToggle = document.getElementById('overlay-toggle');
+const overlayOpacity = document.getElementById('overlay-opacity');
 
 function setOverlay(message, { error = false } = {}) {
   overlayMessage.textContent = message;
@@ -36,6 +39,11 @@ const params = new URLSearchParams(window.location.search);
 const plyUrl = params.get('plyUrl');
 const projectIdParam = params.get('projectId');
 const initialDocumentId = params.get('documentId');
+// Splat scenes trained in a local IFC frame (X_local = X_ifc - offset) get StreamBIM's
+// camera converted into that frame; the renderer reports the offset per scene
+// (transform.json), ?ifcOffset=x,y,z overrides it.
+const ifcOffsetParam = params.get('ifcOffset');
+let sceneFrame = ifcOffsetParam ? { ifcOffset: ifcOffsetParam.split(',').map(Number) } : null;
 
 const container = document.getElementById('splat-container');
 
@@ -60,14 +68,37 @@ function activate(view) {
   active = view;
   // Re-apply the latest known camera state so the view snaps to the right
   // position immediately after a swap.
-  if (lastCameraState) applyCameraState(view.camera, lastCameraState);
+  if (lastCameraState) applyCameraState(view.camera, lastCameraState, sceneFrame);
 }
+
+// Overlay mode (src/overlay.js): the widget turns into a transparent layer over
+// StreamBIM's own BIM. A click-through layer can't be clicked, so StreamBIM's
+// expand button (didExpand / didContract) is the way back to the panel.
+const overlayMode = createOverlayMode({
+  api: () => window.StreamBIM && window.StreamBIM.API,
+  onChange: (on) => { overlayToggle.textContent = on ? 'Overlay on' : 'Overlay'; },
+});
 
 const streambim = connectStreamBIM({
   onCameraState: (state) => {
     lastCameraState = state;
-    if (active) applyCameraState(active.camera, state);
+    if (active) applyCameraState(active.camera, state, sceneFrame);
   },
+  onEvent: (name) => {
+    if ((name === 'didExpand' || name === 'didContract') && overlayMode.active) overlayMode.exit();
+  },
+});
+streambim.then(() => {
+  overlayToggle.classList.remove('hidden');
+  const api = window.StreamBIM.API;
+  if (api && api.setShowExpandButton) api.setShowExpandButton(true).catch(() => {});
+}, () => {});
+
+overlayToggle.addEventListener('click', () => {
+  overlayMode.toggle().catch((err) => setOverlay(err.message, { error: true }));
+});
+overlayOpacity.addEventListener('input', () => {
+  document.documentElement.style.setProperty('--vs-layer-opacity', String(overlayOpacity.value / 100));
 });
 
 // Document mode: the project's .ply files stored in StreamBIM (access stays
@@ -288,6 +319,8 @@ function startRemote(relayOrigin) {
     relay: relayWindow,
     relayOrigin,
     onReady: (info) => {
+      if (!ifcOffsetParam) sceneFrame = info.ifcOffset ? { ifcOffset: info.ifcOffset } : null;
+      if (lastCameraState) applyCameraState(remote.camera, lastCameraState, sceneFrame);
       // Outside StreamBIM nothing drives the camera: start at the scene's
       // own default view instead of the generic one.
       if (!lastCameraState && info.defaultCamera) {
